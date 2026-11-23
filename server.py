@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -197,6 +198,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _index(self):
+        """首页：把 __BUILD__ 换成 index.html 的修改时间。
+
+        页面自己印不出「这是哪一版」，改完样式或逻辑后只能靠文案差异反推
+        浏览器跑的是不是新文件；用文件 mtime 注入，改一次就自动换一次。
+        """
+        p = FRONTEND / "index.html"
+        if not p.is_file():
+            self._json({"error": "frontend/index.html 缺失"}, 404)
+            return
+        stamp = datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M").encode()
+        body = p.read_bytes().replace(b"__BUILD__", stamp)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -222,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_bytes(memlog_json(
                     q.get("path", ""), float(ref) if ref else None))
             elif u.path in ("/", "/index.html"):
-                self._file(FRONTEND / "index.html")
+                self._index()
             elif u.path == "/data.js":
                 f = FRONTEND / "data.js"
                 if f.is_file():
