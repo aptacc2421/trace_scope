@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# 48MB 扫描产物，由 make_data.py 重新生成，不进版本库
+frontend/data.js

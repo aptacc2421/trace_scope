@@ -1,0 +1,3276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trace_scope · 轨迹示波器</title>
+<style>
+  :root {
+    --bg: #0e1016;
+    --panel: #161a23;
+    --panel-2: #1c212d;
+    --border: #262c3a;
+    --border-soft: #20263260;
+    --text: #dfe3ec;
+    --muted: #8b93a7;
+    --dim: #5c6478;
+    --accent: #6c8cff;
+    --gen: #4f8ef7;
+    --tool: #35c78d;
+    --cursor: #f5b445;
+    --danger: #e5606c;
+    --mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+    --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); font: 13px/1.5 var(--sans);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── 顶栏 ─────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 0 14px;
+    height: 46px; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .brand { font: 600 15px var(--mono); color: var(--accent); letter-spacing: .5px; }
+  .brand small { color: var(--muted); font-weight: 400; margin-left: 8px; letter-spacing: 0; }
+  .path {
+    color: var(--dim); font: 11px var(--mono); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
+  }
+  .spacer { flex: 1; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--muted); border: none; cursor: pointer;
+    padding: 5px 11px; font: 12px var(--sans); white-space: nowrap;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 11px; font: 12px var(--sans); cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font: 12px var(--sans);
+  }
+
+  /* ── 摘要条 ───────────────────────────── */
+  .summary {
+    display: flex; align-items: center; gap: 20px; padding: 8px 14px;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex: none;
+    overflow-x: auto;
+  }
+  .metric { display: flex; flex-direction: column; min-width: 72px; }
+  .metric .k { color: var(--muted); font-size: 11px; }
+  .metric .v { font: 600 14px var(--mono); color: var(--text); white-space: nowrap; }
+  .metric .v.acc { color: var(--accent); }
+  .stackbar { width: 140px; height: 8px; border-radius: 4px; overflow: hidden; display: flex; margin-top: 5px; }
+  .stackbar .g { background: var(--gen); }
+  .stackbar .t { background: var(--tool); }
+  .legend { display: flex; gap: 12px; margin-left: auto; color: var(--muted); font-size: 11px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  /* ── 主区三栏 ─────────────────────────── */
+  .main { flex: 1; display: grid; grid-template-columns: 292px 1fr 322px; min-height: 0; }
+  .col { min-height: 0; display: flex; flex-direction: column; }
+  .col + .col { border-left: 1px solid var(--border); }
+  .col-h {
+    padding: 8px 12px; font-size: 11px; color: var(--muted); letter-spacing: .6px;
+    border-bottom: 1px solid var(--border); flex: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .col-h .grow { flex: 1; }
+  .col-b { flex: 1; overflow: auto; }
+
+  /* 选择树 */
+  .tree-tools { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex: none; }
+  .tree-tools input {
+    flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 4px 8px; font: 12px var(--sans);
+  }
+  .tree-tools .btn { padding: 4px 8px; font-size: 11px; }
+  .row {
+    display: flex; align-items: center; gap: 6px; padding: 3px 10px;
+    cursor: pointer; white-space: nowrap; user-select: none;
+  }
+  .row:hover { background: var(--panel-2); }
+  .row .tag {
+    flex: none; width: 22px; font: 10px var(--mono); text-align: center;
+    border-radius: 3px; padding: 1px 0;
+  }
+  .row .name { overflow: hidden; text-overflow: ellipsis; font: 12px var(--mono); }
+  .row .meta { margin-left: auto; color: var(--dim); font: 10px var(--mono); padding-left: 8px; }
+  .row.l-trace { color: var(--accent); font-weight: 600; }
+  .row.l-task { color: var(--muted); padding-left: 22px; }
+  .row.l-ep { padding-left: 38px; }
+  .row.failed .name { color: var(--danger); }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  /* 多路波形区（纵向堆叠，共用时间轴，各路独立纵向滚动） */
+  .lanes { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .lane {
+    flex: 1 1 0; min-height: 150px; display: flex; flex-direction: column;
+    position: relative;
+  }
+  .lane + .lane { border-top: 1px solid var(--border); }
+  .lane-h {
+    display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+    border-bottom: 1px solid var(--border); flex: none; cursor: pointer;
+  }
+  .lane.active .lane-h { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
+  .lane-tag {
+    flex: none; width: 20px; height: 20px; border-radius: 5px; text-align: center;
+    font: 600 11px/20px var(--mono); background: var(--accent); color: #fff;
+  }
+  .lane:nth-child(2n) .lane-tag { background: var(--tool); }
+  .lane:nth-child(3n) .lane-tag { background: #b07cf7; }
+  .lane-h .lane-path {
+    color: var(--dim); font: 11px var(--mono); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+  }
+  .lane-h select { padding: 3px 6px; font-size: 11px; max-width: 170px; }
+  .lane-h .btn { padding: 3px 8px; font-size: 11px; }
+  #memMenu {
+    position: fixed; z-index: 60; width: 250px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px; font-size: 11px; box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  }
+  #memMenu .mm-head { margin-bottom: 6px; word-break: break-all; }
+  #memMenu .mm-acts { display: flex; gap: 6px; margin: 4px 0; }
+  #memMenu .mm-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+  #memMenu .mm-fields { max-height: 32vh; overflow: auto; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+  #memMenu .mm-acts { flex-wrap: wrap; }
+  #memMenu .mm-fields .mm-grp + .mm-grp .mm-grp-row { border-top: 1px solid var(--border); }
+  #memMenu .mm-grp-row { margin-top: 4px; padding-top: 4px; }
+  #memMenu .mm-f-row { padding-left: 18px; }
+  #memBig .mm-grp { display: flex; flex-direction: column; }
+  #memBig, #memCmp {
+    position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
+    background: rgba(12, 15, 22, .96); padding: 12px; box-sizing: border-box;
+  }
+  #memBig .mb-h, #memCmp .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #memBig .mb-read, #memCmp .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; }
+  #memBig .mb-body, #memCmp .mb-body { flex: 1; min-height: 0; }
+  #memCmp .mb-body { overflow-y: auto; }
+  #memBig .mb-fields, #memCmp .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  /* 对比界面字段面板：大组（数据段）→ 小组（二级段）→ 字段，三层缩进 */
+  #memCmp .mb-fields { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; max-height: 132px; }
+  #memCmp .mm-seg, #memCmp .mm-grp { display: flex; flex-direction: column; }
+  #memCmp .mm-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+  #memCmp .mm-seg + .mm-seg { margin-top: 6px; }
+  #memCmp .mm-seg-row { border-bottom: 1px solid var(--border); }
+  #memCmp .mm-grp > .mm-grp-row { padding-left: 18px; }
+  #memCmp .mm-grp .mm-f-row, #memCmp .mm-seg > .mm-f-row { padding-left: 36px; }
+  .lane-h .lane-close { font: 13px/1.2 var(--mono); padding: 2px 8px; color: var(--muted); }
+  .lane-h .lane-close:hover { color: var(--danger); border-color: var(--danger); }
+  .wave-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  /* 时间轴固定顶部（26=AXIS_H），并发占用固定底部（96=BAND_GAP+BAND_H），中间波形行独立滚动 */
+  .wave-scroll { position: absolute; left: 0; right: 0; top: 26px; bottom: 96px; overflow-y: auto; overflow-x: hidden; }
+  .wave-wrap canvas { display: block; width: 100%; cursor: crosshair; }
+  .axis-cv { position: absolute; top: 0; left: 0; right: 0; height: 26px; z-index: 3; }
+  .band-cv { position: absolute; bottom: 0; left: 0; right: 0; height: 96px; z-index: 3; }
+  .mem-cv { position: absolute; bottom: 96px; left: 0; right: 0; height: 76px; z-index: 3; display: none; }
+  .cursor-cv { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+  .wave-hint {
+    flex: none; padding: 4px 12px; color: var(--dim); font-size: 11px;
+    border-top: 1px solid var(--border);
+  }
+  .readout {
+    position: absolute; top: 34px; right: 12px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px;
+    font: 11px var(--mono); color: var(--muted); pointer-events: none; display: none;
+    z-index: 4; max-width: 46ch;
+  }
+  .readout b { color: var(--text); }
+  .readout .g { color: var(--gen); }
+  .readout .t { color: var(--tool); }
+  .tooltip {
+    position: absolute; background: #1e2432f2; border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 11px; font: 11px var(--mono); color: var(--text);
+    pointer-events: none; display: none; max-width: 380px; z-index: 5;
+    box-shadow: 0 6px 24px #0009;
+  }
+  .tooltip .t-gen { color: var(--gen); }
+  .tooltip .t-tool { color: var(--tool); }
+  .tooltip .dim { color: var(--muted); }
+
+  /* 分析面板 */
+  .block { padding: 11px 12px; border-bottom: 1px solid var(--border); }
+  .block h4 {
+    font-size: 11px; color: var(--muted); letter-spacing: .6px;
+    font-weight: 600; margin-bottom: 8px;
+  }
+  .kv { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; gap: 8px; }
+  .kv .k { color: var(--muted); white-space: nowrap; }
+  .kv .v { font-family: var(--mono); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+  .kv .v.g { color: var(--gen); }
+  .kv .v.t { color: var(--tool); }
+  .kv .v.bad { color: var(--danger); }
+  .ebar {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0;
+    cursor: pointer; font: 11px var(--mono);
+  }
+  .ebar:hover .nm { color: var(--accent); }
+  .ebar .nm {
+    width: 138px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    cursor: pointer; text-decoration: underline dotted var(--dim); text-underline-offset: 3px;
+  }
+  .ebar .bar { flex: 1; height: 9px; background: var(--panel-2); border-radius: 3px; overflow: hidden; display: flex; }
+  .ebar .bar .g { background: var(--gen); }
+  .ebar .bar .t { background: var(--tool); }
+  .ebar .dur { width: 50px; text-align: right; color: var(--muted); }
+  .detail pre {
+    background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 6px;
+    padding: 8px; font: 11px/1.5 var(--mono); color: var(--text); white-space: pre-wrap;
+    word-break: break-all; max-height: 170px; overflow: auto; margin: 6px 0;
+  }
+  .detail .hd { font: 600 12px var(--mono); margin-bottom: 4px; }
+  .detail .kv { display: block; padding: 4px 0; }
+  .detail .kv .k { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .detail .kv .v {
+    display: block; font-family: var(--mono); text-align: left;
+    white-space: normal; word-break: break-all; overflow: visible;
+    text-overflow: clip; line-height: 1.45;
+  }
+  .empty { color: var(--dim); font-size: 12px; padding: 10px 0; }
+
+  /* run 对比表 */
+  table.cmp { width: 100%; border-collapse: collapse; font: 11px var(--mono); }
+  table.cmp th {
+    color: var(--muted); font-weight: 400; text-align: right; padding: 3px 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.cmp th:first-child, table.cmp td:first-child { text-align: left; }
+  table.cmp td { padding: 3px 4px; text-align: right; }
+  table.cmp tr { cursor: pointer; }
+  table.cmp tr:hover td { background: var(--panel-2); }
+  table.cmp tr.on td { color: var(--accent); }
+
+  /* 弹窗 */
+  .modal {
+    position: fixed; inset: 0; background: #000a; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-box {
+    width: 620px; max-width: 92vw; max-height: 82vh; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; box-shadow: 0 20px 60px #000a;
+  }
+  .modal-h {
+    display: flex; align-items: center; justify-content: space-between;
+    font: 600 14px var(--sans); margin-bottom: 12px;
+  }
+  .modal-h .x { cursor: pointer; color: var(--muted); font: 16px var(--mono); padding: 2px 8px; }
+  .modal-h .x:hover { color: var(--text); }
+  .modal-path { display: flex; gap: 8px; }
+  .modal-path input {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 10px; font: 12px var(--mono);
+  }
+  .modal-list {
+    flex: 1; min-height: 220px; overflow: auto; margin: 12px 0;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+  }
+  .drow {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    cursor: pointer; font: 12px var(--mono);
+  }
+  .drow:hover { background: #242b3a; }
+  .drow .badge {
+    margin-left: auto; font: 10px var(--sans); color: var(--tool);
+    border: 1px solid var(--tool); border-radius: 999px; padding: 0 8px;
+  }
+  .drow .up { color: var(--accent); }
+  .modal-recent { display: flex; flex-wrap: wrap; gap: 6px; min-height: 26px; }
+  .modal-recent .chip {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+    padding: 2px 10px; font: 11px var(--mono); color: var(--muted); cursor: pointer;
+    max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .modal-recent .chip:hover { color: var(--text); border-color: var(--accent); }
+  .modal-status { min-height: 20px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .modal-status .err { color: var(--danger); }
+  .modal-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">trace_scope<small>轨迹示波器</small></div>
+  <div class="path" id="rootPath">加载中…</div>
+  <div class="spacer"></div>
+  <button class="btn primary" id="openFolderBtn">打开文件夹</button>
+  <button class="btn" id="refreshBtn" title="重新扫描当前目录">刷新</button>
+  <div class="seg" id="runSeg"></div>
+  <select id="sortSel" title="泳道排序">
+    <option value="group">按组排列</option>
+    <option value="start">按开始时间</option>
+  </select>
+  <div class="seg" id="modeSeg">
+    <button data-mode="abs">绝对时间</button>
+    <button data-mode="rel">对齐 t=0</button>
+  </div>
+  <button class="btn" id="cmdModeBtn" title="开启后：点色块=高亮所有已显示 lane 里的同命令块（亮紫，仅命令相同、不限轨迹和步号）；关闭=同sub轨迹标色（红=同步号同命令严格对应 / 橙=重试 / 黄=同步号不同命令）。两套标色共存可叠加">同命令对照</button>
+  <button class="btn" id="markOnlyBtn" disabled title="只显示同sub轨迹标色块（红/橙/黄，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）">只看标色块</button>
+  <button class="btn" id="cmdOnlyBtn" disabled title="只显示同命令高亮块（亮紫，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）。启用条件：开启「同命令对照」后点选一个色块（已有选中块时可直接点本按钮自动补生成标集）">只看相同命令</button>
+  <button class="btn" id="bandOnlyBtn" disabled title="并发占用区：未标色执行压暗成灰，标色块自身时段高亮上层（与上方小块红时间对齐；跟随当前只看的高亮集，未只看时取两套并集）">占用只看高亮</button>
+  <button class="btn" id="resetBtn">复位</button>
+</header>
+
+<div class="summary" id="summary"></div>
+
+<div class="main">
+  <div class="col">
+    <div class="col-h">轨迹选择 · <span id="treeFollow">跟随 A 路</span></div>
+    <div class="tree-tools">
+      <input id="search" placeholder="搜索 id / issue …">
+      <button class="btn" id="selAll">全选</button>
+      <button class="btn" id="selNone">清空</button>
+      <button class="btn" id="selFail">失败</button>
+    </div>
+    <div class="col-b" id="tree"></div>
+  </div>
+
+  <div class="col">
+    <div class="col-h">
+      波形 · 横轴时间 / 纵轴轨迹 · <span id="laneHint2">共用时间轴与游标，各路独立纵向滚动</span>
+      <span class="grow"></span>
+      <div class="seg" id="typeSeg" title="阶段过滤">
+        <button data-type="all">全部</button>
+        <button data-type="gen">仅推理</button>
+        <button data-type="tool">仅工具</button>
+      </div>
+      <button class="btn" id="memCmpBtn" title="跨路对比相同元数据：独立界面，横轴以各 run 开始时间为 t=0">元数据对比</button>
+      <button class="btn" id="addLaneBtn" title="加入一路新的数据做对比">＋ 添加一路</button>
+    </div>
+    <div class="lanes" id="lanes"></div>
+    <div class="wave-hint">滚轮缩放 · 拖拽平移 · 双击复位 · 点色块=标同sub轨迹对应块（红=同步号同命令·严格对应 / 橙=重试同命令 / 黄=同步号不同命令·异常）· 「同命令对照」开=点色块高亮全部同命令块（亮紫，跨轨迹泛匹配）· 只看标色块/只看相同命令=只显示对应标色集（此模式下点击不退出）· 占用只看高亮=并发占用压暗未标色 · 游标读数含各颜色分别并发 · 「元数据」=每路自选 datalog 在时间轴上叠加元数据曲线（同单位合并、严格同刻度；下拉可勾选字段 / split view，游标显示采样值）· Esc / 普通模式点空白恢复</div>
+  </div>
+
+  <div class="col">
+    <div class="col-h">
+      分析 · <span id="anaFollow">跟随 A 路</span>
+      <span class="grow"></span>
+      <button class="btn" id="pngBtn" style="padding:3px 8px;font-size:11px">导出 PNG</button>
+      <button class="btn" id="csvBtn" style="padding:3px 8px;font-size:11px">导出 CSV</button>
+    </div>
+    <div class="col-b" id="analysis"></div>
+  </div>
+</div>
+
+<!-- 打开文件夹弹窗 -->
+<div class="modal" id="folderModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-h">
+      <span id="modalTitle">打开数据文件夹</span>
+      <span class="x" id="modalClose">×</span>
+    </div>
+    <div class="modal-path">
+      <input id="folderPath" placeholder="例如 C:\Users\...\display\runs 或 /home/xxx/rollout/runs">
+      <button class="btn" id="goUp">上级</button>
+      <button class="btn" id="loadDirBtn">浏览</button>
+      <button class="btn primary" id="scanBtn">扫描</button>
+    </div>
+    <div class="modal-list" id="folderList"></div>
+    <div class="modal-recent" id="recentList"></div>
+    <div class="modal-status" id="modalStatus"></div>
+    <div class="modal-foot">
+      <button class="btn" id="modalCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 选择 datalog（内存日志）弹窗 -->
+<div class="modal" id="memModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-h">
+      <span id="memModalTitle">选择 datalog（内存日志）</span>
+      <span class="x" id="memModalClose">×</span>
+    </div>
+    <div class="modal-path">
+      <input id="memPath" placeholder="例如 C:\Users\...\display\logs">
+      <button class="btn" id="memGoUp">上级</button>
+      <button class="btn" id="memLoadDirBtn">浏览</button>
+    </div>
+    <div class="modal-list" id="memList"></div>
+    <div class="modal-recent" id="memRecentList"></div>
+    <div class="modal-status" id="memModalStatus"></div>
+    <div class="modal-foot">
+      <button class="btn" id="memClearBtn">移除内存曲线</button>
+      <button class="btn" id="memModalCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  /* ── 常量与工具 ─────────────────────── */
+  const C = {
+    bg: '#0e1016', bandBg: '#121620', gutter: '#141824', gutterLine: '#262c3a',
+    grid: '#20263260', rowAlt: '#12161f40',
+    text: '#dfe3ec', muted: '#8b93a7', dim: '#5c6478',
+    gen: '#4f8ef7', tool: '#35c78d', cursor: '#f5b445', accent: '#6c8cff',
+    // 关联标色：A 红=同sub轨迹+同步号+同命令（严格对应） B 橙=同sub轨迹+不同步号+同命令（重试重复）
+    // C 亮黄=同sub轨迹+同步号+不同命令（执行发散，基本不应出现，出现即异常，故用高对比警示色）
+    // CMD 亮紫=同命令对照（跨轨迹泛匹配，与 A 红语义不同：A 是严格对应、CMD 只看命令相同，故配色必须区分开）
+    markA: '#ff4d4d', markB: '#ff9632', markC: '#ffe14d', markCmd: '#c26bff', // markCmd=同命令对照高亮（亮紫，与 A 红区分）
+  };
+  const GUTTER = 158, AXIS_H = 26, PAD_R = 12, ROW_H = 20, GRP_H = 22;
+  const MARK_ROW_H = 14; // 只看标色块模式的紧凑行高（纵向无间隔堆叠）
+  const BAND_H = 84, BAND_GAP = 12;
+  // 元数据曲线（datalog）：默认同单位字段合并成一条带、严格同刻度（MB/GB/%/次/个 各自分带），
+  // split view 时每字段一条独立小带，带高动态伸缩
+  const MEM_ROW_H = 18; // split view：每个指标小带的行高
+  const MEM_MERGE_H = 44; // 合并视图：每个单位组（同刻度多曲线 + 图例）的高度
+  const MEM_COLORS = ['#43e8d8', '#4f8ef7', '#f5b445', '#ff6b6b', '#35c78d', '#c26bff', '#ff9632', '#7fd1ff', '#e36bd6', '#9bd44c'];
+  const memColor = (i) => MEM_COLORS[i % MEM_COLORS.length];
+  // 可见字段按单位分组（同单位合并、严格同刻度）；split view 时每字段独立一组
+  function memGroups(lane) {
+    const groups = [];
+    const byUnit = {};
+    lane.mem.fields.forEach((f, i) => {
+      if (lane.memHide.has(f)) return;
+      const u = memUnit(f) || '—';
+      if (!byUnit[u]) { byUnit[u] = { unit: u, items: [] }; groups.push(byUnit[u]); }
+      byUnit[u].items.push({ f, i });
+    });
+    return groups;
+  }
+  const memH = (lane) => {
+    if (!lane || !lane.mem) return 0;
+    const gs = memGroups(lane);
+    const n = lane.memSplit ? gs.reduce((a, g) => a + g.items.length, 0) : gs.length;
+    return n * (lane.memSplit ? memRowH(n) : MEM_MERGE_H);
+  };
+  // split view 行高：字段极多（JSONL memlog 可有数百字段）时压缩行高，总高不超上限
+  const MEM_SPLIT_MAX = 480;
+  function memRowH(n) {
+    return n * MEM_ROW_H > MEM_SPLIT_MAX ? Math.max(2, Math.floor(MEM_SPLIT_MAX / n)) : MEM_ROW_H;
+  }
+  // 字段勾选列表（下拉菜单/大图共用）：按单位分组（与曲线带同规则），
+  // 组头勾选框整组开关（半选=组内部分显示），不勾的组整组不显示
+  const memGrpKey = (f) => memUnit(f) || '—';
+  function memFieldGroupsHTML(lane) {
+    const groups = [], byUnit = {};
+    lane.mem.fields.forEach((f, i) => {
+      const u = memGrpKey(f);
+      if (!byUnit[u]) { byUnit[u] = { unit: u, items: [] }; groups.push(byUnit[u]); }
+      byUnit[u].items.push({ f, i });
+    });
+    return groups.map(g => {
+      const nvis = g.items.filter(it => !lane.memHide.has(it.f)).length;
+      const rows = g.items.map(it =>
+        '<label class="mm-row mm-f-row"><input type="checkbox" data-f="' + esc(it.f) + '"' +
+        (lane.memHide.has(it.f) ? '' : ' checked') + '>' +
+        '<span style="color:' + memColor(it.i) + '">' + esc(it.f) + '</span>' +
+        '<span class="dim">' + esc(memUnit(it.f) || '-') + '</span></label>').join('');
+      return '<div class="mm-grp" data-unit="' + esc(g.unit) + '">' +
+        '<label class="mm-row mm-grp-row"><input type="checkbox" data-g="' + esc(g.unit) + '"' +
+        (nvis ? ' checked' : '') + ' data-vis="' + nvis + '" data-n="' + g.items.length + '">' +
+        '<b>' + esc(g.unit === '—' ? '其他（无单位）' : g.unit) + '</b>' +
+        '<span class="dim">' + nvis + '/' + g.items.length + '</span></label>' + rows + '</div>';
+    }).join('');
+  }
+  // 同步某组的组头勾选态/半选态/计数（字段勾选变化后就地更新，避免整表重绘跳动）
+  function memSyncGroup(lane, root, unit) {
+    const cbG = Array.from(root.querySelectorAll('input[data-g]')).find(x => x.dataset.g === unit);
+    if (!cbG) return;
+    const items = lane.mem.fields.filter(f => memGrpKey(f) === unit);
+    const nvis = items.filter(f => !lane.memHide.has(f)).length;
+    cbG.checked = nvis > 0;
+    cbG.indeterminate = nvis > 0 && nvis < items.length;
+    const lab = cbG.closest('.mm-grp-row').querySelector('.dim');
+    if (lab) lab.textContent = nvis + '/' + items.length;
+  }
+  function memToggleGroup(lane, unit, on) {
+    lane.mem.fields.forEach(f => {
+      if (memGrpKey(f) !== unit) return;
+      if (on) lane.memHide.delete(f); else lane.memHide.add(f);
+    });
+  }
+
+  const $ = (s) => document.querySelector(s);
+  const p2 = (n, w) => String(n).padStart(w, '0');
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  function fmtClock(ms) {
+    const d = new Date(ms);
+    return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) + '.' + p2(d.getMilliseconds(), 3);
+  }
+  function fmtDur(sec) {
+    if (sec == null || isNaN(sec)) return '-';
+    if (sec < 60) return sec.toFixed(1) + 's';
+    const m = Math.floor(sec / 60);
+    return m + 'm ' + p2(Math.round(sec - m * 60)) + 's';
+  }
+  function fmtMem(v) {
+    if (v == null || isNaN(v)) return '-';
+    if (Math.abs(v) >= 10000) return Math.round(v).toLocaleString('en-US');
+    return String(Math.abs(v) >= 100 ? Math.round(v) : Number(v).toFixed(1));
+  }
+  // memlog 字段单位：后缀 _mb/_gb 优先，其余按两种 datalog 格式的已知字段。
+  // 单位就是合并显示的分组依据：同单位同刻度，不同单位分带
+  function memUnit(f) {
+    if (/_gb$/i.test(f)) return 'GB';
+    if (/_mb$/i.test(f)) return 'MB';
+    // JSONL memlog（measure/memlog.jsonl）：段名.字段
+    if (/^mem\./.test(f)) return 'kB';                 // /proc/meminfo 原始值 kB
+    if (/^node\.\d+\.meminfo\./.test(f)) return 'kB';  // 每 NUMA 节点 meminfo 原始值 kB（与 mem.* 同类）
+    if (/^vm\./.test(f)) return '次';                   // vmstat 计数器
+    if (/^psi\./.test(f)) return /\.total$/.test(f) ? 'us' : '%';
+    if (/^cg\.events\./.test(f)) return '次';
+    if (/^cg\./.test(f)) return 'B';                    // cgroup 字节数
+    if (/\.oom_kill$|_total$/.test(f)) return '次';
+    if (/_ps$/.test(f)) return '/s';
+    if (f === 'used' || f === 'avail') return 'MB';
+    if (f === 'cg' || f === 'anon') return 'GB';
+    if (/^psi/.test(f)) return '%';
+    if (/^(pswp|pgscan|oom)/.test(f)) return '次';
+    if (/^rss_(n|big)$/.test(f)) return '个';
+    return '';
+  }
+  // 默认只显示重要字段：容量（MB/GB）、百分比（%）、swap I/O、OOM；
+  // 已知的内核原始计数器（次/个/B/kB/us//s）默认隐藏，用户在下拉菜单自行勾选；
+  // 单位未知（''）的字段保守起见默认显示，避免漏掉 memory/swap 这类重要量
+  function memDefaultHide(fields) {
+    return new Set(fields.filter(f => {
+      const u = memUnit(f);
+      if (u === 'MB' || u === 'GB' || u === '%' || u === '') return false;
+      return !/oom|pswp/i.test(f);
+    }));
+  }
+  // 二分找时间最近的采样点 [t, v]
+  function nearestPt(pts, tAbs) {
+    if (!pts.length) return null;
+    let lo = 0, hi = pts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid][0] < tAbs) lo = mid + 1; else hi = mid;
+    }
+    const a = pts[lo], b = pts[Math.max(0, lo - 1)];
+    return Math.abs(a[0] - tAbs) <= Math.abs(b[0] - tAbs) ? a : b;
+  }
+
+  /* ── 状态：多路 lane，共用时间轴/游标 ── */
+  let serverMode = false;
+
+  const state = {
+    mode: 'rel',
+    sort: 'group',
+    spanFilter: 'all',
+    search: '',
+    view: null,          // 共用横向视图 {t0,t1}
+    cursorT: null,       // 共用游标时刻
+    markFam: null,       // 轨迹族标色集 Map<span,'A'|'B'|'C'>（普通点击产生）
+    markCmd: null,       // 同命令标色集 Map<span,'CMD'>（「同命令对照」开时点击产生，两套共存互不清除）
+    onlyView: null,      // 只看模式 null|'fam'|'cmd'（选择看哪套高亮）
+    bandOnly: false,     // 并发占用「只看高亮」：未标色执行压暗、标色执行高亮上层
+    cmdMode: false,      // 同命令对照开关（决定点击写入哪套标色，仅显式点击触发）
+    lanes: [],           // 每路独立：payload / runId / selected / activeEp / activeSpan / rows
+    activeLane: 0,
+    laneSort: null,      // lane 统计表排序 {k:'gAvg'|'kAvg'|'gMax'|'kMax', asc:bool}，默认按表内顺序
+  };
+  // 记住上次的时间模式（默认「对齐 t=0」，刷新后不回退到绝对时间）
+  try {
+    const m = localStorage.getItem('trace_scope.mode');
+    if (m === 'abs' || m === 'rel') state.mode = m;
+  } catch (e) { /* 忽略 */ }
+  let drag = null;
+
+  const laneLetter = (i) => String.fromCharCode(65 + i);
+  const laneOf = () => state.lanes[state.activeLane] || null;
+  const run = (lane) => (lane && lane.payload) ? lane.payload.runs.find(r => r.id === lane.runId) : null;
+  const selectedEps = (lane) => {
+    const r = run(lane);
+    return r ? r.episodes.filter(e => lane.selected.has(e.id)) : [];
+  };
+  const showSpan = (sp) => state.spanFilter === 'all' || sp.t === state.spanFilter;
+  // 对齐 t=0：每路整体平移「第一条轨迹起点」→ t=0，各路同比例、第一条起点对齐；
+  // 绝对时间：不平移，共用真实时钟
+  function laneShift(lane) {
+    if (state.mode !== 'rel' || !lane) return 0;
+    let t0 = Infinity;
+    for (const ep of selectedEps(lane)) t0 = Math.min(t0, ep.start);
+    if (isFinite(t0)) return t0;
+    const r = run(lane);
+    return r ? r.start : 0;
+  }
+
+
+  function sortedSel(lane) {
+    const eps = selectedEps(lane).slice();
+    if (state.sort === 'start') return eps.sort((a, b) => a.start - b.start);
+    return eps.sort((a, b) =>
+      a.trace.localeCompare(b.trace) || a.task - b.task || a.samp - b.samp || a.start - b.start);
+  }
+
+  function selectAll(lane) {
+    const r = run(lane);
+    lane.selected = r ? new Set(r.episodes.map(e => e.id)) : new Set();
+  }
+
+  /* ── span 按需加载：概要层只带元信息+预聚合，波形 span 按可视时间窗懒加载 ── */
+  function setSpans(ep, spans, full) {
+    for (const sp of spans) sp.k = ep.id + '|' + sp.t + '|' + sp.i + '|' + sp.s + '|' + sp.e;
+    ep.spans = spans;
+    if (full) ep._full = true; // 全量加载后不再被窗口请求覆盖
+  }
+  // 预聚合兜底（旧离线快照 data.js 没有 iv/ag/top），口径与后端 _merge_iv/_span_stats/_top_gen 一致
+  function prepEps(r) {
+    for (const ep of r.episodes) {
+      if (!ep.spans) ep.spans = [];
+      if (ep.spans.length && !ep._full) setSpans(ep, ep.spans, true);
+      if (!ep.iv) {
+        ep.iv = [];
+        for (const sp of ep.spans) {
+          const last = ep.iv[ep.iv.length - 1];
+          if (last && sp.s <= last[1]) last[1] = Math.max(last[1], sp.e);
+          else ep.iv.push([sp.s, sp.e]);
+        }
+        if (!ep.iv.length) ep.iv.push([ep.start, ep.end || ep.start]);
+      }
+      if (!ep.ag) {
+        ep.ag = { g: [0, 0, 0], t: [0, 0, 0] };
+        for (const sp of ep.spans) {
+          const d = (sp.e - sp.s) / 1000, a = ep.ag[sp.t === 'gen' ? 'g' : 't'];
+          a[0]++; a[1] += d; if (d > a[2]) a[2] = d;
+        }
+      }
+      if (!ep.top) {
+        ep.top = ep.spans.filter(sp => sp.t === 'gen')
+          .sort((a, b) => (b.e - b.s) - (a.e - a.s)).slice(0, 8)
+          .map(sp => ({ t: 'gen', i: sp.i, s: sp.s, e: sp.e, d: (sp.e - sp.s) / 1000,
+            pt: sp.pt, ct: sp.ct, tps: sp.tps, ttft: sp.ttft }));
+      }
+      for (const tp of ep.top) tp.k = ep.id + '|gen|' + tp.i + '|' + tp.s + '|' + tp.e;
+    }
+  }
+  async function fetchSpans(lane, params, runId) {
+    const q = new URLSearchParams({ path: lane.payload.root, run: runId || lane.runId });
+    for (const k in params) q.set(k, params[k]);
+    return await (await fetch('/api/spans?' + q)).json();
+  }
+  // 标色要跨轨迹比对命令内容：给指定 episode 补齐全量 span
+  async function ensureFull(lane, eps) {
+    const need = eps.filter(e => !e._full);
+    if (!need.length) return;
+    try {
+      const j = await fetchSpans(lane, { eps: need.map(e => e.id).join(',') });
+      for (const ep of need) if (j.spans && j.spans[ep.id]) setSpans(ep, j.spans[ep.id], true);
+    } catch (e) { /* 网络抖动保持现状 */ }
+  }
+  // 可视时间窗懒加载：每次只取视图 ±35% 跨度；防抖合并连续平移/缩放
+  const WIN_MARGIN = 0.35;
+  function syncSpanWindows() {
+    if (!serverMode || !state.view) return;
+    for (const lane of state.lanes) {
+      if (!lane.payload) continue;
+      const sh = laneShift(lane), vw = state.view.t1 - state.view.t0;
+      // 视图是相对时间（对齐 t=0），源 span 的 s/e 是绝对 epoch；请求时加回 sh 还原绝对窗
+      const t0 = state.view.t0 + sh - vw * WIN_MARGIN, t1 = state.view.t1 + sh + vw * WIN_MARGIN;
+      if (lane._winRun === lane.runId && lane._win && lane._win[0] <= t0 && t1 <= lane._win[1]) continue;
+      if (lane._winTimer) clearTimeout(lane._winTimer);
+      const runId = lane.runId;
+      lane._winTimer = setTimeout(() => {
+        lane._winTimer = null;
+        fetchSpans(lane, { t0, t1 }, runId).then(j => {
+          const r = run(lane);
+          if (!j.spans || !r || lane.runId !== runId) return;
+          for (const ep of r.episodes) {
+            if (!ep._full && j.spans[ep.id]) setSpans(ep, j.spans[ep.id], false);
+          }
+          lane._win = [t0, t1];
+          lane._winRun = runId;
+          drawAll();
+        }).catch(() => { /* 忽略 */ });
+      }, 150);
+    }
+  }
+
+  function fitView() {
+    let t0 = Infinity, t1 = -Infinity;
+    for (const lane of state.lanes) {
+      const sh = laneShift(lane);
+      for (const ep of selectedEps(lane)) {
+        t0 = Math.min(t0, ep.start - sh);
+        t1 = Math.max(t1, (ep.end || ep.start) - sh);
+      }
+    }
+    if (!isFinite(t0)) { state.view = null; return; }
+    const pad = (t1 - t0) * 0.02 || 1000;
+    state.view = { t0: t0 - pad, t1: t1 + pad };
+  }
+
+  function fullSpan() {
+    let t0 = Infinity, t1 = -Infinity;
+    for (const lane of state.lanes) {
+      const sh = laneShift(lane);
+      for (const ep of selectedEps(lane)) {
+        t0 = Math.min(t0, ep.start - sh);
+        t1 = Math.max(t1, (ep.end || ep.start) - sh);
+      }
+    }
+    return isFinite(t0) ? t1 - t0 : 1;
+  }
+
+  // 跳转到某条轨迹（可选聚焦某个色块）：纵向滚到泳道，横向视图不可见时缩放过去
+  function jumpTo(lane, ep, sp) {
+    if (!lane.selected.has(ep.id)) lane.selected.add(ep.id);
+    lane.activeEp = ep;
+    lane.activeSpan = sp ? { ep, sp } : null;
+    const sh = laneShift(lane);
+    const t0 = (sp ? sp.s : ep.start) - sh;
+    const t1 = (sp ? sp.e : (ep.end || ep.start)) - sh;
+    const v = state.view;
+    if (!v || t0 < v.t0 || t1 > v.t1) {
+      const pad = (t1 - t0) * 0.15 || 1000;
+      state.view = { t0: t0 - pad, t1: t1 + pad };
+    }
+    renderAll();
+    const row = (lane.rows || []).find(r => r.type === 'ep' && r.ep === ep);
+    if (row) {
+      const sc = lane.el.scroll;
+      sc.scrollTop = Math.max(0, row.y + row.h / 2 - sc.clientHeight / 2);
+    }
+  }
+
+  /* ── 路（lane）动态管理 ─────────────── */
+  function addLane(payload) {
+    const el = document.createElement('div');
+    el.className = 'lane';
+    el.innerHTML =
+      '<div class="lane-h">' +
+        '<span class="lane-tag">A</span>' +
+        '<select class="lane-run" style="display:none"></select>' +
+        '<span class="lane-path">未选择数据</span>' +
+        '<button class="btn lane-open">换数据</button>' +
+        '<button class="btn lane-mem" title="加载/管理 datalog 元数据曲线（内存、psi、swap 等）">元数据</button>' +
+        '<button class="btn lane-mem-x" style="display:none" title="移除内存曲线">×</button>' +
+        '<button class="btn lane-row-out" title="波形行纵向缩小：同一个框里显示更多行（几十条）">行－</button>' +
+        '<button class="btn lane-row-in" title="波形行纵向放大：同一个框里显示更少行（几条）">行＋</button>' +
+        '<button class="btn lane-close" title="移除此路">×</button>' +
+      '</div>' +
+      '<div class="wave-wrap">' +
+        '<canvas class="axis-cv"></canvas>' +
+        '<div class="wave-scroll"><canvas class="rows-cv"></canvas></div>' +
+        '<canvas class="mem-cv"></canvas>' +
+        '<canvas class="band-cv"></canvas>' +
+        '<canvas class="cursor-cv"></canvas>' +
+        '<div class="readout"></div>' +
+        '<div class="tooltip"></div>' +
+      '</div>';
+    $('#lanes').appendChild(el);
+
+    const lane = {
+      payload: null, runId: null,
+      selected: new Set(), activeEp: null, activeSpan: null, hoverSpan: null,
+      mem: null,   // datalog 元数据解析结果（默认同单位合并显示，可下拉勾选字段）
+      memHide: new Set(), memSplit: false,
+      rows: [], W: 0, H: 0, rowScale: 1,
+      el: {
+        root: el,
+        tag: el.querySelector('.lane-tag'),
+        runSel: el.querySelector('.lane-run'),
+        path: el.querySelector('.lane-path'),
+        closeBtn: el.querySelector('.lane-close'),
+        wrap: el.querySelector('.wave-wrap'),
+        scroll: el.querySelector('.wave-scroll'),
+        axisCanvas: el.querySelector('.axis-cv'),
+        rowsCanvas: el.querySelector('.rows-cv'),
+        bandCanvas: el.querySelector('.band-cv'),
+        memCanvas: el.querySelector('.mem-cv'),
+        cursorCanvas: el.querySelector('.cursor-cv'),
+        memBtn: el.querySelector('.lane-mem'),
+        memX: el.querySelector('.lane-mem-x'),
+        readout: el.querySelector('.readout'),
+        tooltip: el.querySelector('.tooltip'),
+      },
+    };
+    lane.axisCtx = lane.el.axisCanvas.getContext('2d');
+    lane.rowsCtx = lane.el.rowsCanvas.getContext('2d');
+    lane.bandCtx = lane.el.bandCanvas.getContext('2d');
+    lane.memCtx = lane.el.memCanvas.getContext('2d');
+    lane.cursorCtx = lane.el.cursorCanvas.getContext('2d');
+    state.lanes.push(lane);
+    bindLane(lane);
+
+    el.querySelector('.lane-open').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openModal(state.lanes.indexOf(lane));
+    });
+    el.querySelector('.lane-close').addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeLane(state.lanes.indexOf(lane));
+    });
+    el.querySelector('.lane-row-in').addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoomRows(lane, 1.25);
+    });
+    el.querySelector('.lane-row-out').addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoomRows(lane, 1 / 1.25);
+    });
+    el.querySelector('.lane-mem').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = state.lanes.indexOf(lane);
+      // 已加载：弹出下拉（显示/隐藏、split view、更换）；未加载：直接选文件
+      if (lane.mem) openMemMenu(idx, e.currentTarget);
+      else openMemModal(idx);
+    });
+    el.querySelector('.lane-mem-x').addEventListener('click', (e) => {
+      e.stopPropagation();
+      lane.mem = null;
+      applyMemLayout(lane);
+      renderLaneHeaders();
+      draw(lane);
+    });
+    // 双击元数据曲线带 = 全屏大图（纵轴刻度 + 游标读数 + 字段勾选）
+    el.querySelector('.mem-cv').addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (lane.mem) openMemBig(state.lanes.indexOf(lane));
+    });
+    el.querySelector('.lane-h').addEventListener('click', () => setActiveLane(state.lanes.indexOf(lane)));
+    lane.el.runSel.addEventListener('click', (e) => e.stopPropagation());
+    lane.el.runSel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      lane.runId = e.target.value;
+      lane.activeEp = null; lane.activeSpan = null;
+      clearMark();
+      selectAll(lane);
+      fitView();
+      renderAll();
+    });
+
+    if (payload && applyPayload(lane, payload)) {
+      setActiveLane(state.lanes.indexOf(lane));
+    } else {
+      renderAll();
+    }
+    return lane;
+  }
+
+  function removeLane(idx) {
+    if (state.lanes.length <= 1) return;
+    const lane = state.lanes[idx];
+    lane.el.root.remove();
+    state.lanes.splice(idx, 1);
+    if (state.activeLane >= state.lanes.length) state.activeLane = state.lanes.length - 1;
+    fitView();
+    renderAll();
+  }
+
+  function setActiveLane(idx) {
+    if (idx === state.activeLane) return;
+    state.activeLane = idx;
+    renderAll();
+  }
+
+  function applyPayload(lane, payload) {
+    if (!payload || !payload.runs || !payload.runs.length) {
+      setModalStatus('该目录下没有发现 run（需要 manifest.json 或 records/*.json）', true);
+      return false;
+    }
+    const keepRun = lane.runId && payload.runs.some(r => r.id === lane.runId) ? lane.runId : null;
+    lane.payload = payload;
+    for (const r of payload.runs) prepEps(r);
+    lane._win = null; lane._winRun = null;
+    lane.runId = keepRun || payload.runs[0].id;
+    lane.activeEp = null; lane.activeSpan = null;
+    clearMark(); // 换数据后旧标色失效
+    selectAll(lane);
+    fitView();
+    renderAll();
+    return true;
+  }
+
+  /* ── 摘要条（跟随当前路） ───────────── */
+  function peakConcurrency(lane, eps) {
+    // 并发峰值：rec=记录条数（波形一条=一条，同一样本多副本各算一条），samp=去重样本数
+    const recEv = [], sampEv = [];
+    const bySamp = new Map();
+    const sh = laneShift(lane);
+    for (const ep of eps) {
+      const iv = ep.iv.map(([s, e]) => [s - sh, e - sh]); // 预聚合合并区间（概要层下发）
+      iv.sort((a, b) => a[0] - b[0]);
+      let cs = null, ce = null;
+      for (const [s, e] of iv) {
+        if (cs == null) { cs = s; ce = e; }
+        else if (s <= ce) { ce = Math.max(ce, e); }
+        else { recEv.push([cs, 1]); recEv.push([ce, -1]); cs = s; ce = e; }
+      }
+      if (cs != null) { recEv.push([cs, 1]); recEv.push([ce, -1]); }
+      const gk = ep.task + '|' + ep.samp;
+      if (!bySamp.has(gk)) bySamp.set(gk, []);
+      bySamp.get(gk).push(...iv);
+    }
+    for (const iv of bySamp.values()) {
+      iv.sort((a, b) => a[0] - b[0]);
+      let cs = null, ce = null;
+      for (const [s, e] of iv) {
+        if (cs == null) { cs = s; ce = e; }
+        else if (s <= ce) { ce = Math.max(ce, e); }
+        else { sampEv.push([cs, 1]); sampEv.push([ce, -1]); cs = s; ce = e; }
+      }
+      if (cs != null) { sampEv.push([cs, 1]); sampEv.push([ce, -1]); }
+    }
+    const pk = (ev) => {
+      ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      let c = 0, p = 0;
+      for (const [, d] of ev) { c += d; p = Math.max(p, c); }
+      return p;
+    };
+    return { rec: pk(recEv), samp: pk(sampEv) };
+  }
+  function renderSummary() {
+    const lane = laneOf();
+    const r = run(lane);
+    const rootEl = $('#summary');
+    if (!r) { rootEl.innerHTML = '<div class="metric"><div class="k">未选择数据</div><div class="v">—</div></div>'; return; }
+    const eps = selectedEps(lane);
+    const pc = peakConcurrency(lane, eps);
+    let gen = 0, tool = 0;
+    for (const ep of eps) { gen += ep.gen_s; tool += ep.tool_s; }
+    const sum = gen + tool || 1;
+    const gp = Math.round(gen / sum * 100);
+    rootEl.innerHTML =
+      metric('数据源', esc(r.id) + (r.config.concurrency != null ? ' · c' + r.config.concurrency : ''), true) +
+      metric('run 起始', fmtClock(r.start)) +
+      metric('run 总耗时', fmtDur(r.wall_s)) +
+      metric('选中轨迹', eps.length + ' / ' + r.episodes.length) +
+      metric('并发峰值', pc.rec + ' 条 / ' + pc.samp + ' 样本') +
+      '<div class="metric"><div class="k">推理 gen / 工具 tool（累计）</div>' +
+        '<div class="stackbar"><div class="g" style="width:' + gp + '%"></div>' +
+        '<div class="t" style="width:' + (100 - gp) + '%"></div></div></div>' +
+      '<div class="legend"><span><i style="background:' + C.gen + '"></i>推理 gen</span>' +
+      '<span><i style="background:' + C.tool + '"></i>工具 tool</span>' +
+      '<span><i style="background:' + C.markA + '"></i>同sub轨迹·同步号同命令（严格）</span>' +
+      '<span><i style="background:' + C.markB + '"></i>同sub轨迹·重试同命令</span>' +
+      '<span><i style="background:' + C.markC + '"></i>同步号不同命令（异常）</span>' +
+      '<span><i style="background:' + C.markCmd + '"></i>同命令对照（跨轨迹）</span></div>';
+  }
+  function metric(k, v, acc) {
+    return '<div class="metric"><div class="k">' + k + '</div>' +
+      '<div class="v' + (acc ? ' acc' : '') + '">' + v + '</div></div>';
+  }
+
+  /* ── 选择树（跟随当前路） ───────────── */
+  function renderTree() {
+    const lane = laneOf();
+    const r = run(lane);
+    if (!r) { $('#tree').innerHTML = '<div class="empty" style="padding:12px">该路未选择数据</div>'; return; }
+    const q = state.search.toLowerCase();
+    const eps = r.episodes.filter(e =>
+      !q || e.id.toLowerCase().includes(q) || (e.issue || '').toLowerCase().includes(q));
+    const byTrace = new Map();
+    for (const ep of eps) {
+      if (!byTrace.has(ep.trace)) byTrace.set(ep.trace, new Map());
+      const byTask = byTrace.get(ep.trace);
+      if (!byTask.has(ep.task)) byTask.set(ep.task, []);
+      byTask.get(ep.task).push(ep);
+    }
+    let html = '';
+    for (const [trace, byTask] of [...byTrace].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const traceEps = [].concat(...[...byTask.values()]);
+      html += row('trace', 'SET', trace, traceEps, traceEps.length + ' eps');
+      for (const [task, taskEps] of [...byTask].sort((a, b) => a[0] - b[0])) {
+        html += row('task', 'GRP', 't' + task, taskEps,
+          'g' + taskEps.length + ' · ' + fmtDur(taskEps.reduce((s, e) => s + e.wall, 0)));
+        const sorted = taskEps.slice().sort((a, b) => a.samp - b.samp || a.start - b.start);
+        for (const ep of sorted) {
+          const nm = (ep.label ? ep.label.replace(/^t\d+ /, '') : 's' + ep.samp) +
+                     (ep.issue ? ' · ' + ep.issue : '');
+          html += row('ep', 'EP', nm, [ep],
+            ep.n_steps + '步 · ' + fmtDur(ep.wall), ep.failed > 0);
+        }
+      }
+    }
+    $('#tree').innerHTML = html || '<div class="empty" style="padding:12px">无匹配轨迹</div>';
+
+    function row(level, tag, name, groupEps, meta, failed) {
+      const allOn = groupEps.every(e => lane.selected.has(e.id));
+      return '<div class="row l-' + level + (failed ? ' failed' : '') + '" data-gid="' +
+        esc(groupEps.map(e => e.id).join(',')) + '">' +
+        '<input type="checkbox" ' + (allOn ? 'checked' : '') + '>' +
+        '<span class="tag">' + tag + '</span>' +
+        '<span class="name">' + esc(name) + '</span>' +
+        '<span class="meta">' + esc(meta) + '</span></div>';
+    }
+  }
+
+  $('#tree').addEventListener('click', (e) => {
+    const rowEl = e.target.closest('.row');
+    const lane = laneOf();
+    if (!rowEl || !lane) return;
+    const cb = rowEl.querySelector('input');
+    if (e.target.tagName !== 'INPUT') cb.checked = !cb.checked;
+    const turnOn = cb.checked;
+    for (const id of rowEl.dataset.gid.split(',')) {
+      if (turnOn) lane.selected.add(id); else lane.selected.delete(id);
+    }
+    if (lane.activeEp && !lane.selected.has(lane.activeEp.id)) lane.activeEp = null;
+    fitView();
+    renderAll();
+  });
+
+  /* ── 关联标色：点一个块 → 标出同轨迹族里同类型的所有对应块 ──
+     轨迹族（= 同 sub 轨迹）= (issue, sample_idx)：同一样本号的 d1/d2/d3 重放副本，跨所有已显示的 lane/文件夹；
+     注：duplicated_traj 时 sample_idx 超出轨迹组数会取模撞组，当前数据未出现，按 (issue, samp) 直接匹配 */
+  function famKey(ep) {
+    return (ep.issue || ep.trace + '|' + ep.task) + '|' + ep.samp;
+  }
+  async function markSpan(srcEp, srcSp) {
+    const map = new Map();
+    if (state.cmdMode) {
+      // 同命令对照：不限轨迹族，把所有已显示 lane 里同命令的块统一高亮（单色）
+      // tool 比 cmd 全文；gen 无命令内容，按步号比对（同第 N 步推理）
+      for (const lane of state.lanes) await ensureFull(lane, selectedEps(lane));
+      const key0 = srcSp.t === 'gen' ? srcSp.i : String(srcSp.cmd == null ? '' : srcSp.cmd);
+      for (const lane of state.lanes) {
+        for (const ep of selectedEps(lane)) {
+          for (const sp of ep.spans) {
+            if (sp.t !== srcSp.t) continue;
+            const key = sp.t === 'gen' ? sp.i : String(sp.cmd == null ? '' : sp.cmd);
+            if (key === key0) map.set(sp.k, 'CMD');
+          }
+        }
+      }
+      state.markCmd = map; // 同命令集
+      return;
+    }
+    const f0 = famKey(srcEp), i0 = srcSp.i;
+    const cmd0 = String(srcSp.cmd == null ? '' : srcSp.cmd);
+    for (const lane of state.lanes) {
+      const famEps = selectedEps(lane).filter(ep => famKey(ep) === f0);
+      await ensureFull(lane, famEps); // 补齐全量 span 后才能跨副本比对命令内容
+      for (const ep of famEps) {
+        for (const sp of ep.spans) {
+          if (sp.t !== srcSp.t) continue; // 只标同类型：点推理标推理、点命令标命令
+          if (sp.t === 'gen') {
+            if (sp.i === i0) map.set(sp.k, 'A'); // gen 无命令内容，只按步号严格对应
+            continue;
+          }
+          const sameCmd = String(sp.cmd == null ? '' : sp.cmd) === cmd0;
+          if (sp.i === i0 && sameCmd) map.set(sp.k, 'A');       // 红：同步号+同命令（严格对应）
+          else if (sp.i !== i0 && sameCmd) map.set(sp.k, 'B');  // 橙：不同步号+同命令（重试重复）
+          else if (sp.i === i0) map.set(sp.k, 'C');             // 亮黄：同步号+不同命令（异常发散）
+        }
+      }
+    }
+    state.markFam = map; // 轨迹族集
+    if (state.onlyView) state.onlyView = state.cmdMode ? 'cmd' : 'fam'; // 只看时跟随新标色
+  }
+  function clearMark() {
+    if (!state.markFam && !state.markCmd && !state.onlyView) return false;
+    state.markFam = null;
+    state.markCmd = null;
+    state.onlyView = null;
+    return true;
+  }
+  // 当前只看的高亮集合：null=全看，'fam'=轨迹族，'cmd'=同命令（并发占用压暗也按此选择）
+  function activeMap() {
+    return state.onlyView === 'fam' ? state.markFam : state.onlyView === 'cmd' ? state.markCmd : null;
+  }
+  function epMarked(ep) {
+    const m = activeMap();
+    if (!m) return false;
+    for (const sp of ep.spans) if (m.has(sp.k) && showSpan(sp)) return true;
+    return false;
+  }
+
+  /* ── 波形 canvas（每路独立：轴固定顶 / 行滚动 / 并发占用固定底） ── */
+  function layout(lane) {
+    const rows = [];
+    const compact = !!state.onlyView;
+    const rh = (compact ? MARK_ROW_H : ROW_H) * lane.rowScale;
+    const gh = GRP_H * lane.rowScale;
+    let y = 0;
+    let lastKey = null;
+    for (const ep of sortedSel(lane)) {
+      if (compact) {
+        // 只看标色块：无标色块的行隐藏，剩余行紧凑堆叠（不分组、无间隔）
+        if (!epMarked(ep)) continue;
+        rows.push({ type: 'ep', ep, y, h: rh });
+        y += rh;
+        continue;
+      }
+      const key = ep.trace + '|' + ep.task;
+      if (state.sort === 'group' && key !== lastKey) {
+        rows.push({ type: 'group', label: ep.trace + ' · t' + ep.task, y, h: gh });
+        y += gh; lastKey = key;
+      }
+      rows.push({ type: 'ep', ep, y, h: rh });
+      y += rh;
+    }
+    lane.rows = rows;
+    lane.rowsH = y;
+  }
+
+  function x(lane, t) {
+    const v = state.view;
+    return GUTTER + (t - v.t0) / (v.t1 - v.t0) * (lane.W - GUTTER - PAD_R);
+  }
+  function timeAt(lane, px) {
+    const v = state.view;
+    return v.t0 + (px - GUTTER) / (lane.W - GUTTER - PAD_R) * (v.t1 - v.t0);
+  }
+
+  // 波形行纵向缩放：同一个框里从几条（大）到几十条（小）；anchorY 为滚动视口内的锚点（缺省=视口中央）
+  function zoomRows(lane, factor, anchorY) {
+    const sc = lane.el.scroll;
+    const scale = Math.max(0.4, Math.min(4, lane.rowScale * factor));
+    if (scale === lane.rowScale) return;
+    const mid = anchorY == null ? sc.clientHeight / 2 : anchorY;
+    const contentY = sc.scrollTop + mid; // 锚点处的内容位置
+    const ratio = scale / lane.rowScale;
+    lane.rowScale = scale;
+    draw(lane);
+    sc.scrollTop = Math.max(0, contentY * ratio - mid); // 锚点处的行不动
+  }
+  function niceTick(spanMs) {
+    const steps = [500, 1e3, 2e3, 5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5, 12e5, 3e6, 6e6];
+    for (const s of steps) if (spanMs / s <= 10) return s;
+    return steps[steps.length - 1];
+  }
+
+  function prepCv(cv, ctx, W, H) {
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.max(1, Math.round(W * dpr));
+    cv.height = Math.max(1, Math.round(H * dpr));
+    cv.style.width = W + 'px';  // 固定像素宽：防止被滚动条压缩导致轴/波形/占用带三段横向错位
+    cv.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function draw(lane) {
+    // 三段（轴/波形/占用带）统一用滚动区可视宽，保证同一时刻 x 位置一致
+    const W = lane.W = lane.el.scroll.clientWidth;
+    layout(lane);
+    drawAxis(lane, W);
+    drawRows(lane, W);
+    drawMem(lane, W);
+    drawBand(lane, W);
+  }
+
+  // 顶部固定：时间刻度
+  function drawAxis(lane, W) {
+    const ctx = lane.axisCtx, H = AXIS_H;
+    prepCv(lane.el.axisCanvas, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = C.gutter;
+    ctx.fillRect(0, 0, GUTTER - 6, H);
+    if (state.view) {
+      const v = state.view;
+      const step = niceTick(v.t1 - v.t0);
+      const tStart = Math.ceil(v.t0 / step) * step;
+      const sh = laneShift(lane); // 每帧只算一次平移量，避免循环内重复遍历
+      ctx.font = '11px Consolas, monospace';
+      for (let t = tStart; t <= v.t1; t += step) {
+        const px = x(lane, t);
+        if (px < GUTTER - 1 || px > W - PAD_R) continue;
+        ctx.fillStyle = C.dim;
+        // 刻度位置各路对齐，标签显示该路自己的时钟（对齐 t=0 时 A 路 1:00 正对 B 路 2:00）
+        ctx.fillText(fmtClock(t + sh), px + 4, 17);
+      }
+    }
+    ctx.fillStyle = C.gutterLine;
+    ctx.fillRect(0, H - 1, W, 1);
+  }
+
+  // 中间滚动：波形行（lane.rows 坐标从 0 开始，随 .wave-scroll 滚动）
+  function drawRows(lane, W) {
+    const ctx = lane.rowsCtx;
+    const H = Math.max(lane.rowsH, lane.el.scroll.clientHeight || 0);
+    prepCv(lane.el.rowsCanvas, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!lane.payload) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px "Segoe UI", sans-serif';
+      ctx.fillText('点击「换数据」选择数据目录', GUTTER + 24, 40);
+      drawGutterBg(ctx, H);
+      return;
+    }
+    if (!state.view) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px "Segoe UI", sans-serif';
+      ctx.fillText('未选中轨迹 —— 在左侧勾选后查看波形', GUTTER + 24, 40);
+      drawGutterBg(ctx, H);
+      return;
+    }
+    const v = state.view;
+    const rows = lane.rows;
+    const sh = laneShift(lane); // 每帧只算一次平移量，span 循环内直接减
+    // 视口裁剪：只画滚动可视区内的行（含 2 行缓冲），避免 2500+ 行每帧全量 fillRect。
+    // 行坐标 r.y 是 canvas 内容坐标，滚动容器偏移即 scrollTop。
+    const sc = lane.el.scroll;
+    const vy0 = sc.scrollTop - 2 * 24, vy1 = sc.scrollTop + sc.clientHeight + 2 * 24;
+    const visible = (r) => r.y + r.h >= vy0 && r.y <= vy1;
+
+    // 泳道交替底色
+    rows.forEach((r, idx) => {
+      if (!visible(r)) return;
+      if (r.type === 'ep' && idx % 2 === 0) {
+        ctx.fillStyle = C.rowAlt;
+        ctx.fillRect(0, r.y, W, r.h);
+      }
+    });
+
+    // 网格
+    const step = niceTick(v.t1 - v.t0);
+    const tStart = Math.ceil(v.t0 / step) * step;
+    for (let t = tStart; t <= v.t1; t += step) {
+      const px = x(lane, t);
+      if (px < GUTTER - 1 || px > W - PAD_R) continue;
+      ctx.fillStyle = C.grid;
+      ctx.fillRect(px, 0, 1, H);
+    }
+
+    // 泳道 span 色块（flt=只看过滤集；无只看时两套标色叠加显示）
+    const flt = activeMap(), fmap = state.markFam, cmap = state.markCmd;
+    for (const r of rows) {
+      if (!visible(r)) continue;
+      if (r.type === 'group') {
+        ctx.fillStyle = '#262c3a';
+        ctx.fillRect(GUTTER, r.y + r.h - 1, W - GUTTER - PAD_R, 1);
+        continue;
+      }
+      const ep = r.ep;
+      for (const sp of ep.spans) {
+        if (!showSpan(sp)) continue;
+        if (flt && !flt.has(sp.k)) continue;
+        const mk = flt ? flt.get(sp.k) : ((fmap && fmap.get(sp.k)) || (cmap && cmap.get(sp.k)) || null);
+        const s = sp.s - sh, e = sp.e - sh;
+        if (e < v.t0 || s > v.t1) continue;
+        const xs = Math.max(x(lane, s), GUTTER), xe = Math.min(x(lane, e), W - PAD_R);
+        // 标色覆盖原色：A 红 / B 橙 / C 亮黄（异常）
+        ctx.fillStyle = mk === 'A' ? C.markA : mk === 'B' ? C.markB : mk === 'C' ? C.markC
+          : (mk === 'CMD' ? C.markCmd : (sp.t === 'gen' ? C.gen : C.tool));
+        // 只看标色块模式：色块占满整行高，纵向无间隔紧凑堆叠
+        const y0 = flt ? r.y : r.y + 4, bh = flt ? r.h : r.h - 8;
+        ctx.fillRect(xs, y0, Math.max(xe - xs, 1.5), bh);
+        if (lane.hoverSpan && lane.hoverSpan.sp === sp) {
+          ctx.strokeStyle = '#fff';
+          ctx.strokeRect(xs - 1, y0 - 1, Math.max(xe - xs, 1.5) + 2, bh + 2);
+        } else if (lane.activeSpan && lane.activeSpan.sp.k === sp.k) { // 按键匹配：预聚合条目与真实 span 对象不同
+          ctx.strokeStyle = C.cursor;
+          ctx.strokeRect(xs - 1, y0 - 1, Math.max(xe - xs, 1.5) + 2, bh + 2);
+        }
+      }
+    }
+
+    // 左槽
+    drawGutterBg(ctx, H);
+    for (const r of rows) {
+      if (!visible(r)) continue;
+      if (r.type === 'group') {
+        ctx.fillStyle = C.muted;
+        ctx.font = '11px "Segoe UI", sans-serif';
+        ctx.fillText('▾ ' + r.label, 10, r.y + r.h / 2 + 4);
+      } else {
+        const ep = r.ep;
+        ctx.font = '11px Consolas, monospace';
+        ctx.fillStyle = lane.activeEp === ep ? C.accent : (ep.failed > 0 ? '#e5606c' : C.muted);
+        ctx.fillText((ep.label || ('t' + ep.task + ' s' + ep.samp)) + '  ' + fmtDur(ep.wall), 10, r.y + r.h / 2 + 4);
+      }
+    }
+  }
+
+  function drawGutterBg(ctx, H) {
+    ctx.fillStyle = C.gutter;
+    ctx.fillRect(0, 0, GUTTER - 6, H);
+    ctx.fillStyle = C.gutterLine;
+    ctx.fillRect(GUTTER - 6, 0, 1, H);
+  }
+
+  function drawCursorIn(lane, ctx, y0, y1, W) {
+    if (state.cursorT == null || !state.view) return;
+    const px = x(lane, state.cursorT);
+    if (px >= GUTTER && px <= W - PAD_R) {
+      ctx.fillStyle = C.cursor;
+      ctx.fillRect(px, y0, 1, y1 - y0);
+    }
+  }
+
+  // 轻量游标层：只在这一层画竖线，鼠标移动只刷新它，不触发 4 层波形全量重绘。
+  // 覆盖整个 wave-wrap，坐标与 axis/band 共用（横向 x() 相对 lane 宽度，wrap 无左偏移）。
+  function drawCursorOverlay() {
+    for (const lane of state.lanes) {
+      const cv = lane.el.cursorCanvas, ctx = lane.cursorCtx;
+      const W = lane.W || lane.el.scroll.clientWidth;
+      const H = lane.el.wrap.clientHeight;
+      prepCv(cv, ctx, W, H);
+      ctx.clearRect(0, 0, W, H);
+      drawCursorIn(lane, ctx, 0, H, W);
+    }
+  }
+
+  function drawAll() {
+    for (const lane of state.lanes) draw(lane);
+    drawCursorOverlay(); // 游标单独一层；底层重绘后同步一次
+    syncSpanWindows(); // 可视时间窗缺 span 时按需拉取
+  }
+
+  // 元数据曲线带布局：有 datalog 时占用并发占用带上方高度（合并视图按单位分带，split 每字段一条），波形滚动区相应收缩
+  function applyMemLayout(lane) {
+    const h = memH(lane);
+    lane.el.memCanvas.style.display = lane.mem && h ? 'block' : 'none';
+    lane.el.scroll.style.bottom = (BAND_GAP + BAND_H + h) + 'px';
+  }
+
+  // 元数据曲线（datalog）：默认同单位字段合并成一条带（严格同刻度、多曲线叠加 + 图例），
+  // 不同单位分带；split view 时每字段一条独立小带。与波形共用时间轴/游标
+  function drawMem(lane, W) {
+    if (!lane.mem) return;
+    const ctx = lane.memCtx, H = memH(lane);
+    if (!H) return;
+    prepCv(lane.el.memCanvas, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    drawGutterBg(ctx, H);
+    if (!state.view) return;
+    const sh = laneShift(lane);
+    const x0 = GUTTER, x1 = W - PAD_R;
+    ctx.font = '10px Consolas, monospace';
+    // split：每字段一组；合并：同单位一组
+    const groups = [];
+    if (lane.memSplit) {
+      memGroups(lane).forEach(g => g.items.forEach(it => groups.push({ unit: g.unit, items: [it] })));
+    } else {
+      groups.push(...memGroups(lane));
+    }
+    const rowH = lane.memSplit ? memRowH(groups.length) : MEM_MERGE_H;
+    let y = 0;
+    for (const g of groups) {
+      const yb = y + rowH - 1;
+      const col = memColor(g.items[0].i);
+      ctx.fillStyle = C.bandBg;
+      ctx.fillRect(x0, y, x1 - x0, rowH - 1);
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(x0, yb, x1 - x0, 1);
+      // 左槽：合并视图显示单位（组内同刻度）；split 显示字段名 + 单位（行高太小时省略）
+      if (rowH >= 12) {
+        ctx.fillStyle = lane.memSplit ? col : C.text;
+        ctx.textAlign = 'right';
+        ctx.fillText(lane.memSplit
+          ? g.items[0].f + (g.unit !== '—' ? ' ' + g.unit : '')
+          : g.unit + ' · ' + g.items.length + ' 项', GUTTER - 10, y + 12);
+        ctx.textAlign = 'left';
+      }
+      // 组内严格同刻度：纵轴取组内所有可见字段 range 的并集
+      let yMin = Infinity, yMax = -Infinity;
+      for (const it of g.items) {
+        const rg = lane.mem.range[it.f] || [0, 1];
+        if (rg[0] < yMin) yMin = rg[0];
+        if (rg[1] > yMax) yMax = rg[1];
+      }
+      const pad = (yMax - yMin) * 0.08 || Math.abs(yMax) * 0.05 || 1;
+      yMin -= pad; yMax += pad;
+      const yTop = lane.memSplit ? y : y + 14; // 合并视图顶部一行留给图例
+      const yy = (v) => yb - 3 - (v - yMin) / (yMax - yMin) * (yb - 3 - yTop);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, y, x1 - x0, rowH - 1);
+      ctx.clip();
+      // 合并视图图例：字段名（按曲线配色，放不下截断）
+      if (!lane.memSplit && g.items.length > 1) {
+        let lx = x0 + 6;
+        for (const it of g.items) {
+          const tw = ctx.measureText(it.f).width;
+          if (lx + tw > x1 - 6) break;
+          ctx.fillStyle = memColor(it.i);
+          ctx.fillText(it.f, lx, y + 11);
+          lx += tw + 10;
+        }
+      }
+      // 视口裁剪：只画落在可见时间窗内的点（含两端各一个越界点保证线段连上），
+      // 避免大 memlog 每字段上千点里绝大多数在屏幕外仍逐点 lineTo。
+      const vx0 = state.view.t0 + sh, vx1 = state.view.t1 + sh;
+      for (const it of g.items) {
+        const pts = lane.mem.series[it.f] || [];
+        if (!pts.length) continue;
+        const cc = memColor(it.i);
+        ctx.beginPath();
+        // pts 按时间升序：二分找 vx0 左侧最后一个点 st（无则 -1），
+        // 从 st 起画到 vx1 右侧一点；首点 moveTo，其余 lineTo。
+        let lo = 0, hi = pts.length - 1, st = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (pts[mid][0] < vx0) { st = mid; lo = mid + 1; } else hi = mid - 1;
+        }
+        let started = false;
+        for (let k = Math.max(0, st); k < pts.length; k++) {
+          const p = pts[k];
+          const px = x(lane, p[0] - sh), py = yy(p[1]);
+          if (!started) { ctx.moveTo(px, py); started = true; }
+          else ctx.lineTo(px, py);
+          if (p[0] > vx1) break;
+        }
+        ctx.strokeStyle = cc;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        // 游标处最近采样点（30s 内）：点 + 数值
+        if (state.cursorT != null) {
+          const pt = nearestPt(pts, state.cursorT + sh);
+          if (pt && Math.abs(pt[0] - (state.cursorT + sh)) <= 30000) {
+            const px = x(lane, pt[0] - sh), py = yy(pt[1]);
+            ctx.fillStyle = cc;
+            ctx.beginPath();
+            ctx.arc(px, py, 2.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = C.text;
+            const vy = lane.memSplit ? y + 11 : Math.min(Math.max(py + 3, yTop + 8), yb - 2);
+            ctx.fillText(fmtMem(pt[1]), Math.min(px + 5, x1 - 36), vy);
+          }
+        }
+      }
+      ctx.restore();
+      y += rowH;
+    }
+  }
+
+  // 并发占用曲线（同一时间轴，按记录条数计数，波形一条=一条，同一样本多副本各算一条，记录内 gen 相位优先）
+  // 推理/工具两条各自独立画（亮线 + 暗填充，不数值叠加）：两者是不同性质的占用，不该相加成一个高度
+  function drawBand(lane, W) {
+    const ctx = lane.bandCtx, H = BAND_GAP + BAND_H;
+    prepCv(lane.el.bandCanvas, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    drawGutterBg(ctx, H);
+    if (!state.view) return;
+    const y0 = BAND_GAP, y1 = y0 + BAND_H;
+
+    ctx.fillStyle = C.bandBg;
+    ctx.fillRect(GUTTER, y0, W - GUTTER - PAD_R, BAND_H);
+    ctx.fillStyle = C.gutterLine;
+    ctx.fillRect(GUTTER, y0, W - GUTTER - PAD_R, 1);
+
+    const eps = selectedEps(lane);
+    const sh = laneShift(lane); // 每帧只算一次平移量
+    // 「占用只看高亮」：未标色执行压暗成灰；
+    // 高亮层只统计标色块自身时段的占用（与上方小块红在时间上严格对齐）。
+    // 高亮集=当前只看的标色集，未只看时取两套标色并集
+    const dim = state.bandOnly && (state.markFam || state.markCmd);
+    const hiSet = state.onlyView === 'fam' ? state.markFam : state.onlyView === 'cmd' ? state.markCmd : null;
+    const hiEv = [];
+    if (dim) {
+      for (const ep of eps) {
+        for (const sp of ep.spans) {
+          const inSet = hiSet ? hiSet.has(sp.k)
+            : ((state.markFam && state.markFam.has(sp.k)) || (state.markCmd && state.markCmd.has(sp.k)));
+          if (!inSet || !showSpan(sp)) continue;
+          const kind = sp.t === 'gen' ? 0 : 1;
+          hiEv.push([sp.s - sh, kind, 1], [sp.e - sh, kind, -1]);
+        }
+      }
+      hiEv.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
+    }
+    const ev = [];
+    for (const ep of eps) {
+      const gk = ep.id;
+      const iv = [[], []];
+      for (const sp of ep.spans) {
+        if (!showSpan(sp)) continue;
+        iv[sp.t === 'gen' ? 0 : 1].push([sp.s - sh, sp.e - sh]);
+      }
+      for (let kind = 0; kind < 2; kind++) {
+        const arr = iv[kind].sort((a, b) => a[0] - b[0]);
+        let cs = null, ce = null;
+        const flush = () => { if (cs != null) { ev.push([cs, gk, kind, 1]); ev.push([ce, gk, kind, -1]); } };
+        for (const [s, e] of arr) {
+          if (cs == null) { cs = s; ce = e; }
+          else if (s <= ce) { ce = Math.max(ce, e); }
+          else { flush(); cs = s; ce = e; }
+        }
+        flush();
+      }
+    }
+    ev.sort((a, b) => a[0] - b[0] || a[3] - b[3]);
+
+    const px0 = GUTTER + 1, px1 = W - PAD_R - 1;
+    const cnt = new Map();
+    let ei = 0, hi = 0, gC = 0, kC = 0, gM = 0, kM = 0;
+    const apply = (t, gk, kind, d) => {
+      let st = cnt.get(gk);
+      if (!st) { st = [0, 0]; cnt.set(gk, st); }
+      const bg = st[0] > 0 ? 1 : 0, bk = (st[0] === 0 && st[1] > 0) ? 1 : 0;
+      st[kind] += d;
+      const ag = st[0] > 0 ? 1 : 0, ak = (st[0] === 0 && st[1] > 0) ? 1 : 0;
+      gC += ag - bg; kC += ak - bk;
+    };
+    const applyHi = (t, kind, d) => { if (kind === 0) gM += d; else kM += d; }; // 标色块自身时段计数
+    const t0 = timeAt(lane, px0);
+    while (ei < ev.length && ev[ei][0] <= t0) { apply(...ev[ei]); ei++; }
+    while (hi < hiEv.length && hiEv[hi][0] <= t0) { applyHi(...hiEv[hi]); hi++; }
+
+    const samples = [];
+    let maxC = 1, peakG = 0, peakK = 0;
+    for (let px = px0; px < px1; px++) {
+      const t = timeAt(lane, px + 1);
+      while (ei < ev.length && ev[ei][0] <= t) { apply(...ev[ei]); ei++; }
+      while (hi < hiEv.length && hiEv[hi][0] <= t) { applyHi(...hiEv[hi]); hi++; }
+      samples.push([gC, kC, gM, kM]);
+      maxC = Math.max(maxC, gC, kC, gM, kM);
+      peakG = Math.max(peakG, gC);
+      peakK = Math.max(peakK, kC);
+    }
+
+    const scale = (BAND_H - 10) / maxC;
+    const hiC = state.onlyView === 'cmd' ? C.markCmd : C.markA;
+    // 亮线 + 暗填充：每条曲线独立画在基线上，互不叠加
+    const drawArea = (vals, fill, line) => {
+      ctx.beginPath();
+      ctx.moveTo(px0, y1);
+      for (let i = 0; i < vals.length; i++) ctx.lineTo(px0 + i, y1 - vals[i] * scale);
+      ctx.lineTo(px0 + vals.length, y1);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.beginPath();
+      for (let i = 0; i < vals.length; i++) {
+        const px = px0 + i, py = y1 - vals[i] * scale;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = line;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    };
+    const col = (idx) => samples.map(s => s[idx]);
+    if (dim) {
+      // 压暗层：全部执行画灰（保留上下文对比）
+      drawArea(col(0), '#2b3140', '#46506280');
+      drawArea(col(1), '#2b3140', '#46506280');
+      // 高亮层：标色执行用标色亮线 + 暗填充
+      drawArea(col(2), hiC + '26', hiC);
+      drawArea(col(3), hiC + '26', hiC);
+    } else {
+      drawArea(col(1), C.tool + '20', C.tool);
+      drawArea(col(0), C.gen + '20', C.gen);
+    }
+
+    // 峰值参考线
+    ctx.fillStyle = C.dim;
+    ctx.fillRect(px0, y1 - (maxC * scale), px1 - px0, 1);
+
+    // 左槽标签
+    ctx.fillStyle = C.muted;
+    ctx.font = '11px "Segoe UI", sans-serif';
+    ctx.fillText('并发占用' + (dim ? ' ·只看高亮' : ''), 10, y0 + 18);
+    ctx.fillStyle = C.dim;
+    ctx.font = '10px Consolas, monospace';
+    ctx.fillText('峰值 推理 ' + peakG + ' · 工具 ' + peakK, 10, y0 + 34);
+    ctx.fillStyle = C.gen;
+    ctx.fillText('推理', 10, y0 + 52);
+    ctx.fillStyle = C.tool;
+    ctx.fillText('工具', 42, y0 + 52);
+  }
+
+  /* ── 命中测试 / tooltip / 游标读数 ─── */
+  function rowAt(lane, my) {
+    for (const r of lane.rows) if (my >= r.y && my < r.y + r.h) return r;
+    return null;
+  }
+  function hitSpan(lane, ep, t) {
+    const sh = laneShift(lane);
+    const flt = activeMap();
+    for (const sp of ep.spans) {
+      if (!showSpan(sp)) continue;
+      if (flt && !flt.has(sp.k)) continue;
+      if (sp.s - sh <= t && t <= sp.e - sh) return sp;
+    }
+    return null;
+  }
+  function updateTooltip(lane, mx, my, r) {
+    const tip = lane.el.tooltip;
+    if (!r || r.type !== 'ep') {
+      tip.style.display = 'none';
+      lane.hoverSpan = null;
+      return;
+    }
+    const sp = hitSpan(lane, r.ep, timeAt(lane, mx));
+    if (!sp) { tip.style.display = 'none'; lane.hoverSpan = null; return; }
+    lane.hoverSpan = { ep: r.ep, sp };
+    const dur = (sp.e - sp.s) / 1000;
+    let inner = '<div class="' + (sp.t === 'gen' ? 't-gen' : 't-tool') + '">' +
+      (sp.t === 'gen' ? '推理 gen' : '工具 tool') + ' · step ' + sp.i + ' · ' + fmtDur(dur) + '</div>';
+    inner += '<div class="dim">' + esc(r.ep.id) + '</div>';
+    if (sp.t === 'gen') {
+      inner += '<div>tokens ' + (sp.pt || '-') + ' → ' + (sp.ct || '-') +
+        ' · tps ' + (sp.tps != null ? Number(sp.tps).toFixed(1) : '-') +
+        ' · ttft ' + (sp.ttft != null ? sp.ttft + 's' : '-') + '</div>';
+    } else {
+      inner += '<div>exit ' + (sp.exit == null ? '-' : sp.exit) + '</div>';
+      inner += '<div class="dim">' + esc(String(sp.cmd || '').slice(0, 120)) + '</div>';
+    }
+    tip.innerHTML = inner;
+    tip.style.display = 'block';
+    const wrap = lane.el.wrap;
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.min(mx + 14, wrap.clientWidth - tw - 8) + 'px';
+    tip.style.top = Math.max(8, Math.min(my + 14, wrap.clientHeight - th - 8)) + 'px';
+  }
+  function updateReadout(lane, t) {
+    const el = lane.el.readout;
+    if (t == null || !lane.payload) { el.style.display = 'none'; return; }
+    // 并发 = 此刻有 span 在跑的记录条数（波形一条=一条，同一样本多副本各算一条），
+    // 推理=gen 段 工具=tool 段；样本数 = 按 (task,sample) 去重后的在跑样本
+    const eps = selectedEps(lane);
+    const sh = laneShift(lane); // 每次更新只算一次平移量
+    let g = 0, k = 0;
+    const samples = new Set();
+    for (const ep of eps) {
+      let phase = 0; // 0=空闲 1=gen 2=tool
+      for (const sp of ep.spans) {
+        if (!showSpan(sp)) continue;
+        const s = sp.s - sh, e = sp.e - sh;
+        if (s <= t && t <= e) {
+          if (sp.t === 'gen') { phase = 1; break; }
+          phase = 2;
+        }
+      }
+      if (phase) {
+        samples.add(ep.task + '|' + ep.samp);
+        if (phase === 1) g++; else k++;
+      }
+    }
+    el.innerHTML = '游标 <b>' + fmtClock(t + sh) + '</b><br>' +
+      '并发 <b>' + (g + k) + '</b> 条 = <span class="g">推理 ' + g + '</span> + <span class="t">工具 ' + k + '</span>' +
+      ' <span class="dim">（波形一条=一条）</span><br>' +
+      '去重后 <b>' + samples.size + '</b> 个样本在跑 <span class="dim">（同一样本多副本只算一个）</span>';
+    // 标色块并发：游标时刻在跑的块按「颜色代表的功能」分别计数（与波形同色：fam 标色优先于 cmd，其余=未标色）
+    // 标签用语义/功能名（严格对应/重试/异常/同命令对照），不是颜色名；只看模式下只统计当前可见的标色块
+    if (state.markFam || state.markCmd) {
+      const flt = activeMap();
+      const cc = { A: 0, B: 0, C: 0, CMD: 0, none: 0, noneG: 0, noneK: 0 };
+      for (const ep of eps) {
+        for (const sp of ep.spans) {
+          if (!showSpan(sp)) continue;
+          if (flt && !flt.has(sp.k)) continue;
+          const s = sp.s - sh, e = sp.e - sh;
+          if (!(s <= t && t <= e)) continue;
+          const mk = (state.markFam && state.markFam.get(sp.k)) || (state.markCmd && state.markCmd.get(sp.k)) || 'none';
+          cc[mk]++;
+          if (mk === 'none') { if (sp.t === 'gen') cc.noneG++; else cc.noneK++; }
+        }
+      }
+      // 每类一行、计数为 0 的类不显示（蓝绿推理/工具主行不受影响，照常显示）
+      const parts = [];
+      if (cc.A) parts.push('<span style="color:' + C.markA + '">同sub·同index同命令（严格） ' + cc.A + '</span>');
+      if (cc.B) parts.push('<span style="color:' + C.markB + '">同sub·重试同命令 ' + cc.B + '</span>');
+      if (cc.C) parts.push('<span style="color:' + C.markC + '">同sub·同index不同命令（异常） ' + cc.C + '</span>');
+      if (cc.CMD) parts.push('<span style="color:' + C.markCmd + '">同命令·跨轨迹对照 ' + cc.CMD + '</span>');
+      if (cc.none) parts.push('<span class="dim">未标色 ' + cc.none + '（推理 ' + cc.noneG + ' / 工具 ' + cc.noneK + '）</span>');
+      if (parts.length) {
+        el.innerHTML += '<br>标色块并发 <b>' + (cc.A + cc.B + cc.C + cc.CMD) + '</b> 条：<br>' + parts.join('<br>');
+      }
+    }
+    // 元数据读数：游标时刻最近的 datalog 采样点（30s 内），可见字段都列出
+    if (lane.mem) {
+      const items = [];
+      let st = null;
+      lane.mem.fields.forEach((f, i) => {
+        if (lane.memHide.has(f)) return;
+        const pt = nearestPt(lane.mem.series[f] || [], t + sh);
+        if (!pt || Math.abs(pt[0] - (t + sh)) > 30000) return;
+        if (st == null) st = pt[0];
+        items.push('<span style="color:' + memColor(i) + '">' + esc(f) + ' <b>' + fmtMem(pt[1]) + '</b>' +
+          (memUnit(f) ? ' ' + memUnit(f) : '') + '</span>');
+      });
+      if (items.length) {
+        el.innerHTML += '<br>元数据采样 <span class="dim">' + fmtClock(st) + '</span>：<br>' + items.join(' · ');
+      }
+    }
+    el.style.display = 'block';
+  }
+  function updateAllReadouts(t) {
+    for (const lane of state.lanes) updateReadout(lane, t);
+  }
+
+  /* ── canvas 交互（每路绑定，事件挂在 wave-wrap 上覆盖轴/滚动区/占用带） ── */
+  function bindLane(lane) {
+    const wrap = lane.el.wrap;
+
+    wrap.addEventListener('mousemove', (e) => {
+      const wr = wrap.getBoundingClientRect();
+      const mx = e.clientX - wr.left, my = e.clientY - wr.top;
+      if (!state.view) return;
+      if (drag && drag.lane === lane) {
+        const v = state.view;
+        const scale = (v.t1 - v.t0) / (lane.W - GUTTER - PAD_R);
+        const dt = -(mx - drag.x) * scale;
+        state.view = { t0: drag.t0 + dt, t1: drag.t1 + dt };
+        drag.moved = true;
+        drawAll();
+        return;
+      }
+      state.cursorT = mx >= GUTTER ? timeAt(lane, mx) : null;
+      const rr = lane.el.rowsCanvas.getBoundingClientRect();
+      updateTooltip(lane, mx, my, rowAt(lane, e.clientY - rr.top));
+      updateAllReadouts(state.cursorT);
+      drawCursorOverlay(); // 只刷游标层，不重绘 4 层波形
+    });
+
+    wrap.addEventListener('mouseleave', () => {
+      state.cursorT = null;
+      lane.hoverSpan = null;
+      lane.el.tooltip.style.display = 'none';
+      updateAllReadouts(null);
+      drawCursorOverlay();
+    });
+
+    wrap.addEventListener('mousedown', (e) => {
+      setActiveLane(state.lanes.indexOf(lane));
+      if (!state.view) return;
+      const wr = wrap.getBoundingClientRect();
+      drag = {
+        lane, x: e.clientX - wr.left,
+        t0: state.view.t0, t1: state.view.t1, moved: false,
+      };
+    });
+
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (!state.view) return;
+      // Ctrl+滚轮：波形行纵向缩放（行高，不影响并发占用带）
+      if (e.ctrlKey) {
+        const sc = lane.el.scroll;
+        zoomRows(lane, e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientY - sc.getBoundingClientRect().top);
+        return;
+      }
+      const v = state.view;
+      const wr = wrap.getBoundingClientRect();
+      const anchor = timeAt(lane, e.clientX - wr.left);
+      const factor = e.deltaY < 0 ? 1 / 1.18 : 1.18;
+      let span = (v.t1 - v.t0) * factor;
+      const full = fullSpan();
+      span = Math.max(200, Math.min(span, full * 1.2));
+      const r = (anchor - v.t0) / (v.t1 - v.t0);
+      state.view = { t0: anchor - span * r, t1: anchor + span * (1 - r) };
+      drawAll();
+    }, { passive: false });
+
+    wrap.addEventListener('dblclick', () => { fitView(); drawAll(); });
+
+    // 视口裁剪后：滚动显示新行区域，需要重绘 rows 层（axis/band/mem 不随纵向滚动变）。
+    // rAF 节流，避免连续滚动时每帧多次绘制。
+    lane._scrollRaf = 0;
+    lane.el.scroll.addEventListener('scroll', () => {
+      if (lane._scrollRaf) return;
+      lane._scrollRaf = requestAnimationFrame(() => {
+        lane._scrollRaf = 0;
+        if (lane.payload && state.view) drawRows(lane, lane.W || lane.el.scroll.clientWidth);
+      });
+    }, { passive: true });
+  }
+
+  window.addEventListener('mouseup', async (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.moved || !state.view) return;
+    const lane = d.lane;
+    const wr = lane.el.wrap.getBoundingClientRect();
+    const rr = lane.el.rowsCanvas.getBoundingClientRect();
+    const r = rowAt(lane, e.clientY - rr.top);
+    if (r && r.type === 'ep') {
+      const sp = hitSpan(lane, r.ep, timeAt(lane, e.clientX - wr.left));
+      lane.activeEp = r.ep;
+      lane.activeSpan = sp ? { ep: r.ep, sp } : null;
+      if (state.onlyView) {
+        // 只看模式：点击仅切换选中块（白框），不改标色集、不退出（退出=Esc /「退出只看」按钮）
+      } else if (sp) await markSpan(r.ep, sp);   // 普通模式点色块：写入对应标色集（同sub轨迹/同命令）
+    } else if (!state.onlyView) {
+      clearMark();                             // 普通模式点空白：恢复
+    }
+    renderAnalysis();
+    renderHeader();
+    drawAll();
+    updateAllReadouts(state.cursorT); // 标色变化后立即刷新读数里的标色并发
+  });
+
+  /* ── 分析面板（跟随当前路） ─────────── */
+  function runCompareRows(lane) {
+    return lane.payload.runs.map(r => {
+      let gen = 0, tool = 0;
+      for (const ep of r.episodes) { gen += ep.gen_s; tool += ep.tool_s; }
+      const peak = r.peak || peakConcurrencyAbs(r.episodes);
+      return { r, gen, tool, peak };
+    });
+  }
+  function peakConcurrencyAbs(eps) {
+    // 并发峰值（绝对时钟）：rec=记录条数，samp=去重样本数
+    const recEv = [], sampEv = [];
+    const bySamp = new Map();
+    for (const ep of eps) {
+      const iv = ep.iv.map(x => [x[0], x[1]]); // 预聚合合并区间（复制一份，后面要排序合并）
+      iv.sort((a, b) => a[0] - b[0]);
+      let cs = null, ce = null;
+      for (const [s, e] of iv) {
+        if (cs == null) { cs = s; ce = e; }
+        else if (s <= ce) { ce = Math.max(ce, e); }
+        else { recEv.push([cs, 1]); recEv.push([ce, -1]); cs = s; ce = e; }
+      }
+      if (cs != null) { recEv.push([cs, 1]); recEv.push([ce, -1]); }
+      const gk = ep.task + '|' + ep.samp;
+      if (!bySamp.has(gk)) bySamp.set(gk, []);
+      bySamp.get(gk).push(...iv);
+    }
+    for (const iv of bySamp.values()) {
+      iv.sort((a, b) => a[0] - b[0]);
+      let cs = null, ce = null;
+      for (const [s, e] of iv) {
+        if (cs == null) { cs = s; ce = e; }
+        else if (s <= ce) { ce = Math.max(ce, e); }
+        else { sampEv.push([cs, 1]); sampEv.push([ce, -1]); cs = s; ce = e; }
+      }
+      if (cs != null) { sampEv.push([cs, 1]); sampEv.push([ce, -1]); }
+    }
+    const pk = (ev) => {
+      ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      let c = 0, p = 0;
+      for (const [, d] of ev) { c += d; p = Math.max(p, c); }
+      return p;
+    };
+    return { rec: pk(recEv), samp: pk(sampEv) };
+  }
+
+  function renderAnalysis() {
+    const lane = laneOf();
+    const r = run(lane);
+    if (!r) { $('#analysis').innerHTML = '<div class="empty" style="padding:12px">该路未选择数据</div>'; return; }
+    const eps = selectedEps(lane);
+    let gen = 0, tool = 0, wall = 0, steps = 0, failed = 0;
+    const stops = {};
+    for (const ep of eps) {
+      gen += ep.gen_s; tool += ep.tool_s; wall += ep.wall;
+      steps += ep.n_steps; failed += ep.failed;
+      stops[ep.stop || '?'] = (stops[ep.stop || '?'] || 0) + 1;
+    }
+    const sum = gen + tool || 1;
+
+    // lane 统计表：每个 lane 一行，平均/最大推理·执行（按 gen/tool 块耗时统计，选中轨迹口径）
+    const laneStat = (ln) => {
+      const rr = run(ln);
+      if (!rr) return null;
+      let gSum = 0, gN = 0, gMax = 0, kSum = 0, kN = 0, kMax = 0;
+      for (const ep of selectedEps(ln)) {
+        const [gn, gs, gm] = ep.ag.g, [kn, ks, km] = ep.ag.t; // 预聚合块耗时统计
+        gSum += gs; gN += gn; if (gm > gMax) gMax = gm;
+        kSum += ks; kN += kn; if (km > kMax) kMax = km;
+      }
+      const root = String(ln.payload.root || '').replace(/[\\/]+$/, '');
+      return {
+        root,
+        name: root.split(/[\\/]/).pop() || root,
+        gAvg: gN ? gSum / gN : 0, kAvg: kN ? kSum / kN : 0, gMax, kMax,
+      };
+    };
+    const lrows = state.lanes.map((ln, i) => ({ i, st: laneStat(ln) })).filter(x => x.st);
+    const ls = state.laneSort;
+    if (ls) lrows.sort((a, b) => ls.asc ? a.st[ls.k] - b.st[ls.k] : b.st[ls.k] - a.st[ls.k]);
+    const larrow = (k) => ls && ls.k === k ? (ls.asc ? ' ▲' : ' ▼') : '';
+    const laneRowsHtml = lrows.map(x =>
+      '<tr data-lane="' + x.i + '" class="' + (x.i === state.activeLane ? 'on' : '') + '">' +
+      '<td title="' + esc(x.st.root) + '">' + esc(x.st.name) + '</td>' +
+      '<td>' + fmtDur(x.st.gAvg) + '</td><td>' + fmtDur(x.st.kAvg) + '</td>' +
+      '<td>' + fmtDur(x.st.gMax) + '</td><td>' + fmtDur(x.st.kMax) + '</td></tr>').join('');
+    const laneHtml = '<table class="cmp"><tr>' +
+      '<th>lane</th>' +
+      '<th data-lsk="gAvg">平均推理' + larrow('gAvg') + '</th>' +
+      '<th data-lsk="kAvg">平均执行' + larrow('kAvg') + '</th>' +
+      '<th data-lsk="gMax">最大推理' + larrow('gMax') + '</th>' +
+      '<th data-lsk="kMax">最大执行' + larrow('kMax') + '</th></tr>' +
+      laneRowsHtml + '</table>';
+
+    // run 对比表
+    const cmpRows = runCompareRows(lane).map(({ r: rr, gen: g, tool: k, peak }) => {
+      const s = g + k || 1;
+      return '<tr data-run="' + esc(rr.id) + '" class="' + (rr.id === lane.runId ? 'on' : '') + '">' +
+        '<td>' + esc(rr.id) + '</td><td>' + (rr.config.concurrency != null ? 'c' + rr.config.concurrency : '-') + '</td>' +
+        '<td>' + rr.episodes.length + '</td><td>' + fmtDur(rr.wall_s) + '</td>' +
+        '<td>' + Math.round(g / s * 100) + '%</td><td>' + peak.rec + ' / ' + peak.samp + '</td></tr>';
+    }).join('');
+    const cmpHtml = '<table class="cmp"><tr><th>run</th><th>并发</th><th>轨迹</th><th>耗时</th><th>推理%</th><th>峰值(条/样本)</th></tr>' +
+      cmpRows + '</table>';
+
+    // 最慢推理段榜（预聚合 TOP-N 并集里取全局前 8）
+    const slow = [];
+    for (const ep of eps) {
+      ep.top.forEach((sp, ti) => slow.push({ ep, sp, ti, d: sp.d }));
+    }
+    slow.sort((a, b) => b.d - a.d);
+    const slowHtml = slow.slice(0, 8).map(x =>
+      '<div class="ebar" data-ep="' + esc(x.ep.id) + '" data-ti="' + x.ti + '">' +
+      '<span class="nm" title="' + esc(x.ep.id) + ' · step ' + x.sp.i + '">' +
+      esc(x.ep.id.replace(/__t(\d+)__s(\d+)$/, ' t$1s$2')) + ' · step ' + x.sp.i + '</span>' +
+      '<span class="bar"><span class="g" style="width:100%"></span></span>' +
+      '<span class="dur">' + fmtDur(x.d) + '</span></div>').join('');
+
+    // 轨迹耗时条
+    const maxWall = Math.max(...eps.map(e => e.wall), 1);
+    const barsHtml = eps.slice().sort((a, b) => b.wall - a.wall).slice(0, 16).map(ep =>
+      '<div class="ebar" data-ep="' + esc(ep.id) + '">' +
+      '<span class="nm" title="' + esc(ep.id) + '">' + esc(ep.id.replace(/__t(\d+)__s(\d+)$/, ' t$1s$2')) + '</span>' +
+      '<span class="bar"><span class="g" style="width:' + (ep.gen_s / maxWall * 100) + '%"></span>' +
+      '<span class="t" style="width:' + (ep.tool_s / maxWall * 100) + '%"></span></span>' +
+      '<span class="dur">' + fmtDur(ep.wall) + '</span></div>').join('');
+
+    let detail = '<div class="empty">点击波形上的色块或下方条目查看详情</div>';
+    const act = lane.activeSpan;
+    if (act) {
+      const sp = act.sp, ep = act.ep;
+      const dur = (sp.e - sp.s) / 1000;
+      detail = '<div class="hd">' + (sp.t === 'gen' ? '推理 gen' : '工具 tool') + ' · ' + esc(ep.id) + ' · step ' + sp.i + '</div>' +
+        '<div class="kv"><span class="k">时间</span><span class="v">' + fmtClock(sp.s) + ' → ' + fmtClock(sp.e) + '</span></div>' +
+        '<div class="kv"><span class="k">耗时</span><span class="v">' + fmtDur(dur) + '</span></div>' +
+        (sp.t === 'gen'
+          ? '<div class="kv"><span class="k">tokens</span><span class="v">' + (sp.pt || '-') + ' → ' + (sp.ct || '-') + '</span></div>' +
+            '<div class="kv"><span class="k">decode_tps</span><span class="v">' + (sp.tps != null ? Number(sp.tps).toFixed(1) : '-') + '</span></div>' +
+            '<div class="kv"><span class="k">ttft</span><span class="v">' + (sp.ttft != null ? sp.ttft + 's' : '-') + '</span></div>'
+          : '<div class="kv"><span class="k">exit code</span><span class="v' + (sp.exit ? ' bad' : '') + '">' + (sp.exit == null ? '-' : sp.exit) + '</span></div>' +
+            '<pre>' + esc(sp.cmd || '') + '</pre>') +
+        '<div class="kv"><span class="k">episode</span><span class="v">' + ep.n_steps + ' 步 · ' + ep.stop + ' · reward ' + (ep.reward == null ? '-' : ep.reward) + '</span></div>';
+    } else if (lane.activeEp) {
+      const ep = lane.activeEp;
+      detail = '<div class="hd">' + esc(ep.id) + '</div>' +
+        '<div class="kv"><span class="k">时间</span><span class="v">' + fmtClock(ep.start) + ' → ' + fmtClock(ep.end) + '</span></div>' +
+        '<div class="kv"><span class="k">wall</span><span class="v">' + fmtDur(ep.wall) + '</span></div>' +
+        '<div class="kv"><span class="k">推理 / 工具</span><span class="v"><span class="g">' + fmtDur(ep.gen_s) + '</span> / <span class="t">' + fmtDur(ep.tool_s) + '</span></span></div>' +
+        '<div class="kv"><span class="k">步数 / 失败步</span><span class="v' + (ep.failed ? ' bad' : '') + '">' + ep.n_steps + ' / ' + ep.failed + '</span></div>' +
+        '<div class="kv"><span class="k">stop_reason</span><span class="v">' + ep.stop + '</span></div>' +
+        '<div class="kv"><span class="k">reward</span><span class="v">' + (ep.reward == null ? '-' : ep.reward) + '</span></div>';
+    }
+
+    $('#analysis').innerHTML =
+      '<div class="block"><h4>Lane 统计（平均/最大推理·执行，块耗时口径）· 点列头排序（最大从上往下）/ 点行切换 lane</h4>' + laneHtml + '</div>' +
+      '<div class="block"><h4>RUN 对比（点击切换）</h4>' + cmpHtml + '</div>' +
+      '<div class="block"><h4>集合统计</h4>' +
+        kv('选中轨迹', eps.length + ' 条') +
+        kv('累计轨迹耗时', fmtDur(wall)) +
+        kv('推理累计', fmtDur(gen), 'g') +
+        kv('工具累计', fmtDur(tool), 't') +
+        kv('推理 / 工具', Math.round(gen / sum * 100) + '% / ' + Math.round(tool / sum * 100) + '%') +
+        kv('总步数 / 失败步', steps + ' / ' + failed, failed ? 'bad' : '') +
+        kv('stop 分布', Object.entries(stops).map(([k, v]) => k + '×' + v).join(' ')) +
+      '</div>' +
+      '<div class="block"><h4>轨迹耗时排行（蓝=推理 gen / 绿=工具 tool）</h4>' + (barsHtml || '<div class="empty">无</div>') + '</div>' +
+      '<div class="block"><h4>最慢推理段 TOP 8</h4>' + (slowHtml || '<div class="empty">无</div>') + '</div>' +
+      '<div class="block detail"><h4>明细</h4>' + detail + '</div>';
+  }
+  function kv(k, v, cls) {
+    return '<div class="kv"><span class="k">' + k + '</span><span class="v ' + (cls || '') + '">' + v + '</span></div>';
+  }
+
+  $('#analysis').addEventListener('click', (e) => {
+    const lane = laneOf();
+    if (!lane) return;
+    // lane 统计表：点列头排序（默认降序=最大在上），点行切换 lane
+    const lth = e.target.closest('th[data-lsk]');
+    if (lth) {
+      const k = lth.dataset.lsk;
+      if (state.laneSort && state.laneSort.k === k) state.laneSort.asc = !state.laneSort.asc;
+      else state.laneSort = { k, asc: false };
+      renderAnalysis();
+      return;
+    }
+    const ltr = e.target.closest('tr[data-lane]');
+    if (ltr) { setActiveLane(+ltr.dataset.lane); return; }
+    const tr = e.target.closest('tr[data-run]');
+    if (tr) {
+      lane.runId = tr.dataset.run;
+      lane.activeEp = null; lane.activeSpan = null;
+      selectAll(lane);
+      fitView();
+      renderAll();
+      return;
+    }
+    const bar = e.target.closest('.ebar');
+    if (!bar) return;
+    const r = run(lane);
+    const ep = r ? r.episodes.find(x => x.id === bar.dataset.ep) : null;
+    if (!ep) return;
+    const sp = bar.dataset.ti != null ? (ep.top[+bar.dataset.ti] || null) : null;
+    if (e.target.classList.contains('nm')) {
+      jumpTo(lane, ep, sp);
+      return;
+    }
+    lane.activeEp = ep;
+    lane.activeSpan = sp ? { ep, sp } : null;
+    renderAnalysis();
+    drawAll();
+  });
+
+  /* ── CSV / PNG 导出（当前路） ───────── */
+  $('#pngBtn').addEventListener('click', () => {
+    const lane = laneOf();
+    if (!lane || !lane.payload || !state.view) return;
+    draw(lane);
+    // 三段 canvas 纵向拼合后导出：轴 + 波形行 + 并发占用
+    const dpr = window.devicePixelRatio || 1;
+    const W = lane.W, rowsH = lane.rowsH, bandH = BAND_GAP + BAND_H;
+    const mmH = memH(lane);
+    const off = document.createElement('canvas');
+    off.width = Math.max(1, Math.round(W * dpr));
+    off.height = Math.max(1, Math.round((AXIS_H + rowsH + mmH + bandH) * dpr));
+    const octx = off.getContext('2d');
+    octx.fillStyle = C.bg;
+    octx.fillRect(0, 0, off.width, off.height);
+    const rc = lane.el.rowsCanvas;
+    octx.drawImage(lane.el.axisCanvas, 0, 0);
+    octx.drawImage(rc, 0, 0, rc.width, Math.round(rowsH * dpr),
+      0, Math.round(AXIS_H * dpr), rc.width, Math.round(rowsH * dpr));
+    if (lane.mem) {
+      const mc = lane.el.memCanvas;
+      octx.drawImage(mc, 0, 0, mc.width, Math.round(mmH * dpr),
+        0, Math.round((AXIS_H + rowsH) * dpr), mc.width, Math.round(mmH * dpr));
+    }
+    octx.drawImage(lane.el.bandCanvas, 0, Math.round((AXIS_H + rowsH + mmH) * dpr));
+    const a = document.createElement('a');
+    a.href = off.toDataURL('image/png');
+    a.download = 'trace_scope_' + lane.runId + '.png';
+    a.click();
+  });
+  $('#csvBtn').addEventListener('click', () => {
+    const lane = laneOf();
+    const eps = selectedEps(lane);
+    if (!eps.length) return;
+    const head = 'id,trace,task,sample,issue,start,end,wall_s,gen_s,tool_s,steps,failed,stop,reward';
+    const lines = eps.map(e => [
+      e.id, e.trace, e.task, e.samp, e.issue, fmtClock(e.start), fmtClock(e.end),
+      e.wall, e.gen_s, e.tool_s, e.n_steps, e.failed, e.stop, e.reward,
+    ].map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','));
+    const blob = new Blob(['\ufeff' + head + '\n' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'trace_scope_' + lane.runId + '.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  /* ── 顶栏 / 工具栏 ──────────────────── */
+  function renderLaneHeaders() {
+    state.lanes.forEach((lane, i) => {
+      lane.el.tag.textContent = laneLetter(i);
+      lane.el.root.classList.toggle('active', i === state.activeLane);
+      lane.el.closeBtn.style.display = state.lanes.length > 1 ? '' : 'none';
+      lane.el.path.textContent = lane.payload ? lane.payload.root : '未选择数据';
+      lane.el.path.title = lane.payload ? lane.payload.root : '';
+      const runs = lane.payload ? lane.payload.runs : [];
+      lane.el.runSel.innerHTML = runs.map(r =>
+        '<option value="' + esc(r.id) + '"' + (r.id === lane.runId ? ' selected' : '') + '>' + esc(r.id) + '</option>'
+      ).join('');
+      lane.el.runSel.style.display = runs.length > 1 ? '' : 'none';
+      // 元数据（datalog）曲线控件状态
+      const hasMem = !!lane.mem;
+      lane.el.memBtn.classList.toggle('primary', hasMem);
+      lane.el.memBtn.textContent = hasMem ? '元数据✓▾' : '元数据';
+      lane.el.memBtn.title = hasMem
+        ? 'datalog：' + lane.mem.path + '（点开：显示/隐藏字段、split view、更换）'
+        : '加载 datalog 元数据（内存/psi/swap 等）到该路时间轴';
+      lane.el.memX.style.display = hasMem ? '' : 'none';
+    });
+    const letter = laneLetter(state.activeLane);
+    $('#treeFollow').textContent = '跟随 ' + letter + ' 路';
+    $('#anaFollow').textContent = '跟随 ' + letter + ' 路';
+  }
+
+  function renderHeader() {
+    const lane = laneOf();
+    $('#rootPath').textContent = lane && lane.payload ? lane.payload.root : (serverMode ? '未打开数据' : '无数据');
+    $('#rootPath').title = lane && lane.payload ? lane.payload.root : '';
+    const runs = lane && lane.payload ? lane.payload.runs : [];
+    $('#runSeg').innerHTML = runs.map(r =>
+      '<button data-run="' + esc(r.id) + '" class="' + (r.id === lane.runId ? 'on' : '') + '">' +
+      esc(r.id) + '</button>').join('');
+    $('#modeSeg').querySelectorAll('button').forEach(b =>
+      b.classList.toggle('on', b.dataset.mode === state.mode));
+    const mb = $('#markOnlyBtn');
+    mb.disabled = !state.markFam;
+    mb.classList.toggle('primary', state.onlyView === 'fam');
+    mb.textContent = state.onlyView === 'fam' ? '退出只看' : '只看标色块';
+    const cb = $('#cmdOnlyBtn');
+    cb.disabled = !state.markCmd && !(state.cmdMode && lane && lane.activeSpan);
+    cb.classList.toggle('primary', state.onlyView === 'cmd');
+    cb.textContent = state.onlyView === 'cmd' ? '退出只看' : '只看相同命令';
+    const bb = $('#bandOnlyBtn');
+    bb.disabled = !state.markFam && !state.markCmd;
+    if (bb.disabled && state.bandOnly) state.bandOnly = false;
+    bb.classList.toggle('primary', state.bandOnly);
+    $('#cmdModeBtn').classList.toggle('primary', state.cmdMode);
+    $('#typeSeg').querySelectorAll('button').forEach(b =>
+      b.classList.toggle('on', b.dataset.type === state.spanFilter));
+    $('#sortSel').value = state.sort;
+    $('#openFolderBtn').disabled = !serverMode;
+    $('#openFolderBtn').title = serverMode ? '打开任意数据目录' : '请用 python server.py 启动后使用';
+    $('#refreshBtn').disabled = !serverMode || !(lane && lane.payload);
+  }
+  $('#runSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    const lane = laneOf();
+    if (!b || !lane) return;
+    lane.runId = b.dataset.run;
+    lane.activeEp = null; lane.activeSpan = null;
+    clearMark();
+    selectAll(lane);
+    fitView(); renderAll();
+  });
+  $('#modeSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    state.mode = b.dataset.mode;
+    try { localStorage.setItem('trace_scope.mode', state.mode); } catch (err) { /* 忽略 */ }
+    fitView(); renderAll();
+  });
+  $('#typeSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    state.spanFilter = b.dataset.type;
+    for (const lane of state.lanes) lane.hoverSpan = null;
+    for (const lane of state.lanes) lane.el.tooltip.style.display = 'none';
+    renderHeader(); drawAll();
+  });
+  $('#sortSel').addEventListener('change', (e) => {
+    state.sort = e.target.value;
+    drawAll();
+  });
+  $('#resetBtn').addEventListener('click', () => { fitView(); drawAll(); });
+  $('#markOnlyBtn').addEventListener('click', () => {
+    if (!state.markFam) return;
+    state.onlyView = state.onlyView === 'fam' ? null : 'fam'; // 互斥切换只看维度
+    renderHeader();
+    drawAll();
+    updateAllReadouts(state.cursorT);
+  });
+  $('#cmdOnlyBtn').addEventListener('click', async () => {
+    const lane = laneOf();
+    if (!state.markCmd && state.cmdMode && lane && lane.activeSpan) {
+      await markSpan(lane.activeSpan.ep, lane.activeSpan.sp); // 尚无同命令集：以当前选中块为参照补生成
+    }
+    if (!state.markCmd) return;
+    state.onlyView = state.onlyView === 'cmd' ? null : 'cmd'; // 互斥切换只看维度
+    renderHeader();
+    drawAll();
+    updateAllReadouts(state.cursorT);
+  });
+  $('#bandOnlyBtn').addEventListener('click', () => {
+    if (!state.markFam && !state.markCmd) return;
+    state.bandOnly = !state.bandOnly;
+    renderHeader();
+    drawAll();
+  });
+  $('#cmdModeBtn').addEventListener('click', () => {
+    state.cmdMode = !state.cmdMode; // 两套标色共存：切换不清单色
+    renderHeader();
+    drawAll();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && clearMark()) { renderHeader(); drawAll(); updateAllReadouts(state.cursorT); }
+  });
+  $('#search').addEventListener('input', (e) => {
+    state.search = e.target.value.trim().toLowerCase();
+    renderTree();
+  });
+  $('#selAll').addEventListener('click', () => {
+    const lane = laneOf();
+    if (!lane) return;
+    selectAll(lane); fitView(); renderAll();
+  });
+  $('#selNone').addEventListener('click', () => {
+    const lane = laneOf();
+    if (!lane) return;
+    lane.selected.clear();
+    lane.activeEp = null; lane.activeSpan = null;
+    renderAll();
+  });
+  $('#selFail').addEventListener('click', () => {
+    const lane = laneOf();
+    const r = run(lane);
+    if (!r) return;
+    lane.selected.clear();
+    r.episodes.filter(e => e.failed > 0 || e.stop !== 'completed').forEach(e => lane.selected.add(e.id));
+    fitView(); renderAll();
+  });
+  $('#refreshBtn').addEventListener('click', () => {
+    const lane = laneOf();
+    if (!serverMode || !lane || !lane.payload) return;
+    $('#rootPath').textContent = '重新扫描中…';
+    scanPath(lane.payload.root, true);
+  });
+  $('#addLaneBtn').addEventListener('click', () => {
+    const lane = addLane(null);
+    openModal(state.lanes.indexOf(lane));
+  });
+
+  /* ── 打开文件夹弹窗 ─────────────────── */
+  let targetLane = 0;
+  const modal = $('#folderModal');
+  function openModal(idx) {
+    targetLane = idx;
+    const lane = state.lanes[idx];
+    modal.style.display = 'flex';
+    $('#modalTitle').textContent = '打开数据文件夹 · ' + laneLetter(idx) + ' 路';
+    $('#folderPath').value = lane && lane.payload ? lane.payload.root : '';
+    renderRecent();
+    loadDir($('#folderPath').value);
+  }
+  function closeModal() { modal.style.display = 'none'; }
+  function setModalStatus(msg, isErr) {
+    const el = $('#modalStatus');
+    if (el) el.innerHTML = '<span class="' + (isErr ? 'err' : '') + '">' + esc(msg) + '</span>';
+  }
+  function renderRecent() {
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem('trace_scope.recent') || '[]'); } catch (e) { /* 忽略 */ }
+    $('#recentList').innerHTML = recent.map(p =>
+      '<span class="chip" data-path="' + esc(p) + '" title="' + esc(p) + '">' + esc(p) + '</span>').join('');
+  }
+  function saveRecent(path) {
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem('trace_scope.recent') || '[]'); } catch (e) { /* 忽略 */ }
+    recent = [path, ...recent.filter(p => p !== path)].slice(0, 6);
+    localStorage.setItem('trace_scope.recent', JSON.stringify(recent));
+    renderRecent();
+  }
+
+  async function loadDir(path) {
+    if (!serverMode) return;
+    setModalStatus('读取目录…');
+    try {
+      const res = await fetch('/api/ls?path=' + encodeURIComponent(path || ''));
+      const j = await res.json();
+      if (j.error) { setModalStatus(j.error, true); return; }
+      $('#folderPath').value = j.path;
+      const rows = [];
+      if (j.parent) {
+        rows.push('<div class="drow" data-path="' + esc(j.parent) + '">' +
+          '<span class="up">⬆ 上级目录</span></div>');
+      }
+      for (const d of j.dirs) {
+        const p = (j.path.replace(/[\\\/]$/, '') + (j.path.includes('/') ? '/' : '\\') + d.name);
+        rows.push('<div class="drow" data-path="' + esc(p) + '">' +
+          '<span>📁 ' + esc(d.name) + '</span>' +
+          (d.has_runs ? '<span class="badge">含 run 数据</span>' : '') + '</div>');
+      }
+      $('#folderList').innerHTML = rows.join('') || '<div class="empty" style="padding:12px">（空目录）</div>';
+      setModalStatus(j.self_has_runs ? '✓ 当前目录本身就是一个 run 目录，点“扫描”开始分析' : '选择子目录，或直接扫描当前目录');
+    } catch (err) {
+      setModalStatus('请求失败: ' + err, true);
+    }
+  }
+
+  async function scanPath(path, refresh) {
+    try {
+      const res = await fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, refresh: !!refresh }),
+      });
+      const j = await res.json();
+      if (j.error) {
+        setModalStatus(j.error, true);
+        const lane = state.lanes[targetLane];
+        $('#rootPath').textContent = lane && lane.payload ? lane.payload.root : '未打开数据';
+        return;
+      }
+      const lane = state.lanes[targetLane];
+      if (lane && applyPayload(lane, j)) {
+        setActiveLane(targetLane);
+        saveRecent(j.root);
+        closeModal();
+      }
+    } catch (err) {
+      setModalStatus('请求失败: ' + err, true);
+    }
+  }
+
+  $('#openFolderBtn').addEventListener('click', () => openModal(state.activeLane));
+  $('#modalClose').addEventListener('click', closeModal);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#loadDirBtn').addEventListener('click', () => loadDir($('#folderPath').value));
+  $('#goUp').addEventListener('click', () => {
+    const p = $('#folderPath').value.replace(/[\\\/]$/, '');
+    const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+    loadDir(i > 0 ? p.slice(0, i) : p);
+  });
+  $('#scanBtn').addEventListener('click', () => scanPath($('#folderPath').value, true));
+  $('#folderPath').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadDir($('#folderPath').value);
+  });
+  $('#folderList').addEventListener('click', (e) => {
+    const row = e.target.closest('.drow');
+    if (row) loadDir(row.dataset.path);
+  });
+  $('#recentList').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (chip) loadDir(chip.dataset.path);
+  });
+
+  /* ── datalog（内存日志）选择弹窗 / 每路内存曲线 ── */
+  let targetMemLane = 0;
+  const memModal = $('#memModal');
+  const memCache = new Map(); // path → 解析结果（多路共享同文件不重复解析）
+
+  function memDirName(p) {
+    return String(p || '').replace(/[\\/][^\\/]*$/, '');
+  }
+  function setMemStatus(msg, isErr) {
+    $('#memModalStatus').innerHTML = '<span class="' + (isErr ? 'err' : '') + '">' + esc(msg) + '</span>';
+  }
+  function renderMemRecent() {
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem('trace_scope.memRecent') || '[]'); } catch (e) { /* 忽略 */ }
+    $('#memRecentList').innerHTML = recent.map(p =>
+      '<span class="chip" data-path="' + esc(p) + '" title="' + esc(p) + '">' + esc(p) + '</span>').join('');
+  }
+  function saveMemRecent(dir) {
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem('trace_scope.memRecent') || '[]'); } catch (e) { /* 忽略 */ }
+    recent = [dir, ...recent.filter(p => p !== dir)].slice(0, 6);
+    try { localStorage.setItem('trace_scope.memRecent', JSON.stringify(recent)); } catch (e) { /* 忽略 */ }
+    renderMemRecent();
+  }
+
+  function openMemModal(idx) {
+    targetMemLane = idx;
+    const lane = state.lanes[idx];
+    memModal.style.display = 'flex';
+    $('#memModalTitle').textContent = '选择 datalog（内存日志）· ' + laneLetter(idx) + ' 路';
+    let start = '';
+    if (lane && lane.mem) start = memDirName(lane.mem.path);
+    if (!start) {
+      try {
+        const rec = JSON.parse(localStorage.getItem('trace_scope.memRecent') || '[]');
+        if (rec.length) start = rec[0];
+      } catch (e) { /* 忽略 */ }
+    }
+    if (!start && lane && lane.payload) start = memDirName(lane.payload.root) || lane.payload.root;
+    $('#memPath').value = start;
+    renderMemRecent();
+    loadMemDir(start);
+  }
+  function closeMemModal() { memModal.style.display = 'none'; }
+
+  async function loadMemDir(path) {
+    setMemStatus('读取目录…');
+    try {
+      const res = await fetch('/api/memlog/ls?path=' + encodeURIComponent(path || ''));
+      const j = await res.json();
+      if (j.error) { setMemStatus(j.error, true); return; }
+      $('#memPath').value = j.path;
+      const sep = j.path.includes('/') ? '/' : '\\';
+      const base = j.path.replace(/[\\\/]$/, '');
+      const rows = [];
+      if (j.parent) {
+        rows.push('<div class="drow" data-mdir="' + esc(j.parent) + '"><span class="up">⬆ 上级目录</span></div>');
+      }
+      for (const d of j.dirs) {
+        rows.push('<div class="drow" data-mdir="' + esc(base + sep + d.name) + '">' +
+          '<span>📁 ' + esc(d.name) + '</span>' +
+          (d.has_mem ? '<span class="badge">含 datalog</span>' : '') + '</div>');
+      }
+      for (const f of j.files) {
+        rows.push('<div class="drow" data-mfile="' + esc(base + sep + f.name) + '">' +
+          '<span>📄 ' + esc(f.name) + '</span>' +
+          '<span class="badge">' + (f.size > 1048576 ? (f.size / 1048576).toFixed(1) + ' MB' : Math.round(f.size / 1024) + ' KB') + '</span></div>');
+      }
+      $('#memList').innerHTML = rows.join('') || '<div class="empty" style="padding:12px">（该目录没有 datalog 文件，进入子目录找找）</div>';
+      setMemStatus('点选 datalog 文件加载到 ' + laneLetter(targetMemLane) + ' 路时间轴');
+    } catch (err) {
+      setMemStatus('请求失败: ' + err, true);
+    }
+  }
+
+  async function loadMemlogFile(idx, path) {
+    const lane = state.lanes[idx];
+    if (!lane) return;
+    setMemStatus('解析 ' + path + ' …');
+    try {
+      let j = memCache.get(path);
+      if (!j) {
+        const r = run(lane);
+        const ref = r ? r.start : Date.now();
+        const res = await fetch('/api/memlog/load?path=' + encodeURIComponent(path) + '&ref=' + ref);
+        j = await res.json();
+        if (j.error) { setMemStatus(j.error, true); return; }
+        memCache.set(path, j);
+      }
+      lane.mem = j;
+      // 恢复该文件的显示偏好（勾选隐藏 / split view）；无保存记录时按默认规则只显示重要字段
+      const pf = memPrefsOf(path);
+      lane.memHide = pf.hide == null
+        ? memDefaultHide(j.fields)
+        : new Set(pf.hide.filter(f => j.fields.includes(f)));
+      lane.memSplit = !!pf.split;
+      applyMemLayout(lane);
+      saveMemRecent(memDirName(path));
+      closeMemModal();
+      renderLaneHeaders();
+      draw(lane);
+    } catch (err) {
+      setMemStatus('请求失败: ' + err, true);
+    }
+  }
+
+  $('#memModalClose').addEventListener('click', closeMemModal);
+  $('#memModalCancel').addEventListener('click', closeMemModal);
+  $('#memClearBtn').addEventListener('click', () => {
+    const lane = state.lanes[targetMemLane];
+    if (lane) {
+      lane.mem = null;
+      applyMemLayout(lane);
+      renderLaneHeaders();
+      draw(lane);
+    }
+    closeMemModal();
+  });
+  $('#memLoadDirBtn').addEventListener('click', () => loadMemDir($('#memPath').value));
+  $('#memGoUp').addEventListener('click', () => {
+    const p = $('#memPath').value.replace(/[\\\/]$/, '');
+    const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+    loadMemDir(i > 0 ? p.slice(0, i) : p);
+  });
+  $('#memPath').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadMemDir($('#memPath').value);
+  });
+  $('#memList').addEventListener('click', (e) => {
+    const row = e.target.closest('.drow');
+    if (!row) return;
+    if (row.dataset.mfile) loadMemlogFile(targetMemLane, row.dataset.mfile);
+    else if (row.dataset.mdir) loadMemDir(row.dataset.mdir);
+  });
+  $('#memRecentList').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (chip) loadMemDir(chip.dataset.path);
+  });
+
+  /* ── 元数据下拉菜单：显示/隐藏字段、split view、更换/移除 datalog ── */
+  const memMenuEl = document.createElement('div');
+  memMenuEl.id = 'memMenu';
+  memMenuEl.style.display = 'none';
+  document.body.appendChild(memMenuEl);
+  let memMenuLane = -1;
+
+  function memPrefsOf(path) {
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem('trace_scope.memPrefs') || '{}'); } catch (e) { /* 忽略 */ }
+    const r = all[path];
+    if (!r) return { hide: null, split: false };   // 无记录：按默认规则只显示重要字段
+    // v3 起 node.*.meminfo.* 归 kB（默认隐藏）；旧记录的 hide 集合不含它们，
+    // 沿用会让上百个 node 字段重新可见、两路叠加时绘制量暴涨。旧记录按新默认重算。
+    if (!r.v || r.v < 3) return { hide: null, split: !!r.split };
+    return { hide: r.hide || [], split: !!r.split };
+  }
+  function saveMemPrefs(lane) {
+    if (!lane || !lane.mem) return;
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem('trace_scope.memPrefs') || '{}'); } catch (e) { /* 忽略 */ }
+    all[lane.mem.path] = { v: 3, hide: [...lane.memHide], split: lane.memSplit };
+    try { localStorage.setItem('trace_scope.memPrefs', JSON.stringify(all)); } catch (e) { /* 忽略 */ }
+  }
+
+  function openMemMenu(idx, anchor) {
+    const lane = state.lanes[idx];
+    if (!lane || !lane.mem) return;
+    memMenuLane = idx;
+    renderMemMenu();
+    memMenuEl.style.display = 'block';
+    const r = anchor.getBoundingClientRect();
+    const mw = memMenuEl.offsetWidth, mh = memMenuEl.offsetHeight;
+    memMenuEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - mw - 8)) + 'px';
+    memMenuEl.style.top = Math.min(r.bottom + 4, window.innerHeight - mh - 8) + 'px';
+  }
+  function closeMemMenu() { memMenuEl.style.display = 'none'; memMenuLane = -1; }
+
+  function renderMemMenu() {
+    const lane = state.lanes[memMenuLane];
+    if (!lane || !lane.mem) return;
+    const base = lane.mem.path.split(/[\\\/]/).pop();
+    memMenuEl.innerHTML =
+      '<div class="mm-head"><b>元数据</b> <span class="dim">' + esc(base) + '</span></div>' +
+      '<div class="dim" style="padding:2px 10px">默认仅显示容量/百分比/swap/OOM，其余请自行勾选；组头勾选框整组开关</div>' +
+      '<div class="mm-acts">' +
+        '<button class="btn" data-act="change">更换 datalog…</button>' +
+        '<button class="btn" data-act="big">全屏大图</button>' +
+        '<button class="btn" data-act="clear">移除</button>' +
+      '</div>' +
+      '<label class="mm-row"><input type="checkbox" data-act="split"' + (lane.memSplit ? ' checked' : '') + '> split view（每字段一条）</label>' +
+      '<div class="mm-acts">' +
+        '<button class="btn" data-act="all">全选</button>' +
+        '<button class="btn" data-act="none">全不选</button>' +
+      '</div>' +
+      '<div class="mm-fields">' + memFieldGroupsHTML(lane) + '</div>';
+    // 组内部分显示的组头打半选态
+    memMenuEl.querySelectorAll('input[data-g]').forEach(cb => {
+      cb.indeterminate = +cb.dataset.vis > 0 && +cb.dataset.vis < +cb.dataset.n;
+    });
+  }
+
+  memMenuEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const lane = state.lanes[memMenuLane];
+    if (!lane) return;
+    const btn = e.target.closest('button');
+    if (btn) {
+      const act = btn.dataset.act;
+      if (act === 'change') { const idx = memMenuLane; closeMemMenu(); openMemModal(idx); return; }
+      if (act === 'big') { const idx = memMenuLane; closeMemMenu(); openMemBig(idx); return; }
+      if (act === 'clear') {
+        lane.mem = null; lane.memHide = new Set(); lane.memSplit = false;
+        applyMemLayout(lane); renderLaneHeaders(); draw(lane); closeMemMenu(); return;
+      }
+      if (act === 'all') lane.memHide = new Set();
+      if (act === 'none') lane.memHide = new Set(lane.mem.fields);
+      saveMemPrefs(lane); renderMemMenu(); applyMemLayout(lane); draw(lane);
+      return;
+    }
+    const cb = e.target.closest('input');
+    if (cb) {
+      if (cb.dataset.act === 'split') lane.memSplit = cb.checked;
+      else if (cb.dataset.g) {
+        // 组头勾选框：整组显示/隐藏，组内字段勾选就地同步
+        memToggleGroup(lane, cb.dataset.g, cb.checked);
+        const grp = cb.closest('.mm-grp');
+        if (grp) grp.querySelectorAll('input[data-f]').forEach(c => { c.checked = cb.checked; });
+      } else if (cb.dataset.f) {
+        if (cb.checked) lane.memHide.delete(cb.dataset.f);
+        else lane.memHide.add(cb.dataset.f);
+      }
+      if (cb.dataset.f) memSyncGroup(lane, memMenuEl, memGrpKey(cb.dataset.f));
+      else if (cb.dataset.g) memSyncGroup(lane, memMenuEl, cb.dataset.g);
+      saveMemPrefs(lane); applyMemLayout(lane); draw(lane);
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (memMenuEl.style.display !== 'none' && !memMenuEl.contains(e.target)) closeMemMenu();
+  });
+  // 双击字段名（key）= 全屏大图
+  memMenuEl.addEventListener('dblclick', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    const row = e.target.closest('.mm-row');
+    if (!row || !row.querySelector('input[data-f]')) return;
+    const idx = memMenuLane;
+    closeMemMenu();
+    openMemBig(idx);
+  });
+
+  /* ── 元数据全屏大图：纵轴刻度明显 + 悬停游标读数 + 字段勾选（Esc/关闭退出） ── */
+  const memBigEl = document.createElement('div');
+  memBigEl.id = 'memBig';
+  memBigEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>元数据</b> <span class="dim" id="mbName"></span>' +
+      '<span class="mb-read" id="mbRead"></span>' +
+      '<button class="btn" id="mbClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-body"><canvas id="mbCv"></canvas></div>' +
+    '<div class="mb-fields" id="mbFields"></div>';
+  document.body.appendChild(memBigEl);
+  const mbCvEl = memBigEl.querySelector('#mbCv');
+  let memBigLane = -1, memBigCursorT = null;
+
+  function openMemBig(idx) {
+    const lane = state.lanes[idx];
+    if (!lane || !lane.mem) return;
+    memBigLane = idx;
+    memBigEl.style.display = 'flex';
+    memBigEl.querySelector('#mbName').textContent = lane.mem.path.split(/[\\\/]/).pop();
+    renderMemBigFields();
+    requestAnimationFrame(drawMemBig);
+  }
+  function closeMemBig() {
+    memBigEl.style.display = 'none';
+    memBigLane = -1;
+    memBigCursorT = null;
+  }
+  function renderMemBigFields() {
+    const lane = state.lanes[memBigLane];
+    if (!lane || !lane.mem) return;
+    const el = memBigEl.querySelector('#mbFields');
+    el.innerHTML = memFieldGroupsHTML(lane);
+    // 组内部分显示的组头打半选态
+    el.querySelectorAll('input[data-g]').forEach(cb => {
+      cb.indeterminate = +cb.dataset.vis > 0 && +cb.dataset.vis < +cb.dataset.n;
+    });
+  }
+  // 大图与小图共享同一套显示/隐藏状态
+  memBigEl.querySelector('#mbFields').addEventListener('click', (e) => {
+    const cb = e.target.closest('input');
+    const lane = state.lanes[memBigLane];
+    if (!cb || !lane) return;
+    if (cb.dataset.g) {
+      memToggleGroup(lane, cb.dataset.g, cb.checked);
+      const grp = cb.closest('.mm-grp');
+      if (grp) grp.querySelectorAll('input[data-f]').forEach(c => { c.checked = cb.checked; });
+      memSyncGroup(lane, memBigEl.querySelector('#mbFields'), cb.dataset.g);
+    } else if (cb.dataset.f) {
+      if (cb.checked) lane.memHide.delete(cb.dataset.f);
+      else lane.memHide.add(cb.dataset.f);
+      memSyncGroup(lane, memBigEl.querySelector('#mbFields'), memGrpKey(cb.dataset.f));
+    } else return;
+    saveMemPrefs(lane);
+    applyMemLayout(lane); draw(lane); drawMemBig();
+  });
+  memBigEl.querySelector('#mbClose').addEventListener('click', closeMemBig);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memBigEl.style.display !== 'none') {
+      e.stopPropagation();
+      closeMemBig();
+    }
+  }, true);
+
+  // 大图始终按单位合并显示（同组严格同刻度），每组带纵轴刻度和网格线，底部时间轴，悬停出游标读数
+  function drawMemBig() {
+    const lane = state.lanes[memBigLane];
+    if (!lane || !lane.mem || memBigEl.style.display === 'none') return;
+    const body = memBigEl.querySelector('.mb-body');
+    const W = body.clientWidth, H = body.clientHeight;
+    if (W < 120 || H < 120) return;
+    const ctx = mbCvEl.getContext('2d');
+    prepCv(mbCvEl, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    const groups = memGroups(lane);
+    if (!groups.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      ctx.fillText('全部字段已隐藏——在下方勾选要显示的字段', 20, 30);
+      return;
+    }
+    const t0 = lane.mem.t0, t1 = lane.mem.t1 || t0 + 1;
+    const x0 = 96, x1 = W - 14, axisH = 26;
+    const xx = (t) => x0 + (t - t0) / (t1 - t0) * (x1 - x0);
+    const gH = Math.floor((H - axisH) / groups.length);
+    ctx.font = '11px Consolas, monospace';
+    let y = 0;
+    for (const g of groups) {
+      // 组内严格同刻度：纵轴取组内所有可见字段 range 的并集
+      let yMin = Infinity, yMax = -Infinity;
+      for (const it of g.items) {
+        const rg = lane.mem.range[it.f] || [0, 1];
+        if (rg[0] < yMin) yMin = rg[0];
+        if (rg[1] > yMax) yMax = rg[1];
+      }
+      const pad = (yMax - yMin) * 0.08 || Math.abs(yMax) * 0.05 || 1;
+      yMin -= pad; yMax += pad;
+      const yTop = y + 26, yBot = y + gH - 10;
+      const yy = (v) => yBot - (v - yMin) / (yMax - yMin) * (yBot - yTop);
+      ctx.fillStyle = C.bandBg;
+      ctx.fillRect(x0, y, x1 - x0, gH - 1);
+      // 纵轴刻度（5 档）+ 网格线 + 数值
+      ctx.textAlign = 'right';
+      for (let k = 0; k <= 4; k++) {
+        const v = yMin + (yMax - yMin) * k / 4;
+        const py = yy(v);
+        ctx.fillStyle = C.gutterLine;
+        ctx.fillRect(x0, py, x1 - x0, 1);
+        ctx.fillStyle = C.dim;
+        ctx.fillText(fmtMem(v), x0 - 8, py + 4);
+      }
+      ctx.textAlign = 'left';
+      // 左槽组名 + 组内图例（按曲线配色）
+      ctx.fillStyle = C.text;
+      ctx.textAlign = 'right';
+      ctx.fillText(g.unit + ' · ' + g.items.length + ' 项', x0 - 8, y + 16);
+      ctx.textAlign = 'left';
+      let lx = x0 + 8;
+      for (const it of g.items) {
+        const name = it.f + (memUnit(it.f) ? ' ' + memUnit(it.f) : '');
+        const tw = ctx.measureText(name).width;
+        if (lx + tw > x1 - 8) break;
+        ctx.fillStyle = memColor(it.i);
+        ctx.fillText(name, lx, y + 16);
+        lx += tw + 14;
+      }
+      // 曲线
+      for (const it of g.items) {
+        const pts = lane.mem.series[it.f] || [];
+        if (!pts.length) continue;
+        ctx.beginPath();
+        for (let k = 0; k < pts.length; k++) {
+          const px = xx(pts[k][0]), py = yy(pts[k][1]);
+          if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = memColor(it.i);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      // 游标与曲线的接触点：打点 + 贴点标注数据（字段=值），不靠颜色分辨
+      if (memBigCursorT != null && memBigCursorT >= t0 && memBigCursorT <= t1) {
+        const gapMs = (t1 - t0) / 100 || 60000;
+        const marks = [];
+        for (const it of g.items) {
+          const pts = lane.mem.series[it.f] || [];
+          if (!pts.length) continue;
+          const pt = nearestPt(pts, memBigCursorT);
+          if (!pt || Math.abs(pt[0] - memBigCursorT) > gapMs) continue;
+          marks.push({ it, px: xx(pt[0]), py: yy(pt[1]), txt: it.f + '=' + fmtMem(pt[1]) });
+        }
+        marks.sort((a, b) => a.py - b.py);
+        ctx.font = '10px Consolas, monospace';
+        let prevY = -1e9;
+        for (const m of marks) {
+          // 标注纵向避让：重叠则下移（不出带）
+          const ly = Math.max(m.py, Math.min(yBot, prevY + 11));
+          prevY = ly;
+          const cc = memColor(m.it.i);
+          // 接触点（描边圆点更醒目）
+          ctx.fillStyle = cc;
+          ctx.beginPath();
+          ctx.arc(m.px, m.py, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = C.bg;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          // 贴点标注：带底色小条，靠右画不下改放左边
+          const tw = ctx.measureText(m.txt).width;
+          const right = m.px + 8 + tw < x1;
+          const lx = right ? m.px + 8 : m.px - 8 - tw;
+          ctx.fillStyle = 'rgba(12, 15, 22, 0.72)';
+          ctx.fillRect(lx - 2, ly - 8, tw + 4, 11);
+          ctx.fillStyle = cc;
+          ctx.fillText(m.txt, lx, ly + 1);
+        }
+        ctx.font = '11px Consolas, monospace';
+      }
+      y += gH;
+    }
+    // 底部时间轴（自动选整分/整时刻度）
+    ctx.fillStyle = C.gutterLine;
+    ctx.fillRect(x0, H - axisH, x1 - x0, 1);
+    const span = t1 - t0;
+    const steps = [60000, 120000, 300000, 600000, 1800000, 3600000, 7200000, 21600000, 43200000, 86400000];
+    let step = steps[steps.length - 1];
+    for (const s of steps) { if (span / s <= 12) { step = s; break; } }
+    ctx.textAlign = 'center';
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+      const px = xx(t);
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(px, H - axisH, 1, 4);
+      ctx.fillStyle = C.dim;
+      ctx.fillText(fmtClock(t), px, H - axisH + 17);
+    }
+    ctx.textAlign = 'left';
+    // 悬停游标
+    if (memBigCursorT != null && memBigCursorT >= t0 && memBigCursorT <= t1) {
+      ctx.fillStyle = C.text;
+      ctx.fillRect(xx(memBigCursorT), 0, 1, H - axisH);
+    }
+    drawMemBigReadout();
+  }
+  function drawMemBigReadout() {
+    const lane = state.lanes[memBigLane];
+    const el = memBigEl.querySelector('#mbRead');
+    if (!lane || !lane.mem) return;
+    if (memBigCursorT == null) {
+      el.innerHTML = '<span class="dim">悬停查看采样值 · 双击小图曲线带或字段名也可打开本视图</span>';
+      return;
+    }
+    const items = [];
+    const gap = (lane.mem.t1 - lane.mem.t0) / 100 || 60000;
+    lane.mem.fields.forEach((f, i) => {
+      if (lane.memHide.has(f)) return;
+      const pt = nearestPt(lane.mem.series[f] || [], memBigCursorT);
+      if (!pt) return;
+      // 就近采样始终显示；离游标较远（数据空档）时标注采样时刻
+      const far = Math.abs(pt[0] - memBigCursorT) > gap;
+      items.push('<span style="color:' + memColor(i) + '">' + esc(f) + ' <b>' + fmtMem(pt[1]) + '</b>' +
+        (memUnit(f) ? ' ' + memUnit(f) : '') +
+        (far ? ' <span class="dim">@' + fmtClock(pt[0]) + '</span>' : '') + '</span>');
+    });
+    el.innerHTML = '<b>' + fmtClock(memBigCursorT) + '</b>：' +
+      (items.join(' · ') || '<span class="dim">（附近无采样）</span>');
+  }
+  mbCvEl.addEventListener('mousemove', (e) => {
+    const lane = state.lanes[memBigLane];
+    if (!lane || !lane.mem) return;
+    const r = mbCvEl.getBoundingClientRect();
+    const x0 = 96, x1 = r.width - 14;
+    const px = e.clientX - r.left;
+    const t0 = lane.mem.t0, t1 = lane.mem.t1 || t0 + 1;
+    const f = Math.min(1, Math.max(0, (px - x0) / (x1 - x0)));
+    memBigCursorT = t0 + f * (t1 - t0);
+    drawMemBig();
+  });
+  mbCvEl.addEventListener('mouseleave', () => {
+    memBigCursorT = null;
+    drawMemBig();
+  });
+
+  /* ── 元数据对比：独立界面，跨路同字段叠加对比（谁大谁小一眼可见）。
+        横轴=各路相对自己 run 开始时间的 t+秒数（不同 run 各自对齐到 t=0），纵轴=字段值。 ── */
+  const memCmpEl = document.createElement('div');
+  memCmpEl.id = 'memCmp';
+  memCmpEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>元数据对比</b> <span class="dim" id="mcName"></span>' +
+      '<span class="mb-read" id="mcRead"></span>' +
+      '<button class="btn" id="mcClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-body"><canvas id="mcCv"></canvas></div>' +
+    '<div class="mb-fields" id="mcFields"></div>';
+  document.body.appendChild(memCmpEl);
+  const mcCvEl = memCmpEl.querySelector('#mcCv');
+  const MC_COLORS = ['#4f8ef7', '#f5b445', '#35c78d', '#c26bff', '#ff6b6b'];
+  let memCmpSel = new Set();     // 对比界面独立的字段勾选（不动各路 memHide）
+  let memCmpCursorX = null;
+
+  const memCmpLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.mem);
+  const memCmpUnion = () => {
+    const out = [], seen = new Set();
+    memCmpLanes().forEach(({ l }) => l.mem.fields.forEach(f => {
+      if (!seen.has(f)) { seen.add(f); out.push(f); }
+    }));
+    return out;
+  };
+  // 对齐锚点=该路 run 的开始时间（无 run 用 memlog 起点），横轴 t=0
+  const memCmpAnchor = (lane) => {
+    const r = run(lane);
+    return r && r.start ? r.start : lane.mem.t0;
+  };
+  const memCmpDur = (lane) => {
+    const r = run(lane);
+    return Math.max(1, (r && r.end ? r.end : lane.mem.t1) - memCmpAnchor(lane));
+  };
+  // 并发占用序列（记录条数口径）：episode 的预聚合 iv → 事件流 → 按时间采样为 [relMs, count]
+  // 只做一次扫描，点数按横轴像素上限收敛（每路 ~600 点足够）
+  const memCmpConc = (lane, durMax, samples) => {
+    const r = run(lane);
+    const eps = r ? r.episodes : [];
+    const anch = memCmpAnchor(lane);
+    const ev = [];
+    for (const ep of eps) {
+      const iv = ep.tiv || [];   // 仅统计 tool 区间：沙箱内实际占用
+      let cs = null, ce = null;
+      const flush = () => { if (cs != null) { ev.push([cs - anch, 1]); ev.push([ce - anch, -1]); } };
+      for (const [s, e] of iv) {
+        if (cs == null) { cs = s; ce = e; }
+        else if (s <= ce) ce = Math.max(ce, e);
+        else { flush(); cs = s; ce = e; }
+      }
+      flush();
+    }
+    ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const out = [];
+    let c = 0, ei = 0, peak = 0;
+    for (let k = 0; k <= samples; k++) {
+      const t = durMax * k / samples;
+      while (ei < ev.length && ev[ei][0] <= t) { c += ev[ei][1]; ei++; }
+      out.push([t, c]);
+      if (c > peak) peak = c;
+    }
+    return { pts: out, peak };
+  };
+  // 图例/标识用 run 名，而不是 memlog 目录
+  const memCmpLabel = (lane) => {
+    const r = run(lane);
+    return (r && r.id) ? r.id : (memDirName(lane.mem.path).split(/[\\/]/).pop() || lane.mem.path);
+  };
+  // 字段面板分层：大组=数据段，小组=二级段（如 cg.events）
+  const MC_SEG_NAME = {
+    derived: 'derived · 派生量（容量 / 速率 / OOM）',
+    psi: 'psi · 压力失速 PSI',
+    cg: 'cg · cgroup 计数器',
+    mem: 'mem · /proc/meminfo',
+    vm: 'vm · vmstat 计数器',
+    '其他': '其他（无段前缀）',
+  };
+  const MC_SEG_ORDER = ['derived', 'psi', 'cg', 'mem', 'vm', '其他'];
+  const mcSegOf = (f) => f.includes('.') ? f.split('.')[0] : '其他';
+  const mcSubOf = (f) => { const p = f.split('.'); return p.length > 2 ? p[1] : ''; };
+
+  function openMemCmp() {
+    const ls = memCmpLanes();
+    if (ls.length < 2) { alert('需要至少两路都已加载元数据（每路点「元数据」选 datalog）'); return; }
+    // 默认勾选=与单路相同的「重要字段」规则（容量/百分比/swap/OOM），其余自行勾选
+    const union = memCmpUnion();
+    memCmpSel = new Set(union.filter(f => !memDefaultHide(union).has(f)));
+    memCmpEl.style.display = 'flex';
+    memCmpEl.querySelector('#mcName').innerHTML = ls.map(({ l, i }, k) =>
+      '<span style="color:' + MC_COLORS[k % MC_COLORS.length] + '" title="' + esc(l.mem.path) + '">■ ' +
+      String.fromCharCode(65 + i) + ' ' + esc(memCmpLabel(l)) + '</span>').join('  vs  ');
+    renderMemCmpFields();
+    memCmpCursorX = null;
+    requestAnimationFrame(drawMemCmp);
+  }
+  function closeMemCmp() { memCmpEl.style.display = 'none'; memCmpCursorX = null; }
+
+  function renderMemCmpFields() {
+    // 大组=数据段（derived/psi/cg/mem/vm），小组=二级段（如 cg.events），无二级段的字段直接列在大组下
+    const segs = [], segMap = {};
+    memCmpUnion().forEach(f => {
+      const s = mcSegOf(f), sub = mcSubOf(f);
+      if (!segMap[s]) { segMap[s] = { seg: s, subs: [], subMap: {} }; segs.push(segMap[s]); }
+      const S = segMap[s];
+      if (!S.subMap[sub]) { S.subMap[sub] = { sub, items: [] }; S.subs.push(S.subMap[sub]); }
+      S.subMap[sub].items.push(f);
+    });
+    segs.sort((a, b) => (MC_SEG_ORDER.indexOf(a.seg) + 1 || 99) - (MC_SEG_ORDER.indexOf(b.seg) + 1 || 99));
+    const fieldRow = (f) => {
+      const p = f.split('.');
+      const short = (mcSubOf(f) ? p.slice(2) : p.slice(1)).join('.') || f;
+      return '<label class="mm-row mm-f-row"><input type="checkbox" data-f="' + esc(f) + '"' +
+        (memCmpSel.has(f) ? ' checked' : '') + '><span>' + esc(short) + '</span>' +
+        '<span class="dim">' + esc(memUnit(f) || '-') + '</span></label>';
+    };
+    const el = memCmpEl.querySelector('#mcFields');
+    el.innerHTML = segs.map(S => {
+      const segItems = [];
+      S.subs.forEach(g => segItems.push(...g.items));
+      const nvis = segItems.filter(f => memCmpSel.has(f)).length;
+      const body = S.subs.map(g => {
+        const rows = g.items.map(fieldRow).join('');
+        if (!g.sub) return rows;
+        const gvis = g.items.filter(f => memCmpSel.has(f)).length;
+        return '<div class="mm-grp"><label class="mm-row mm-grp-row"><input type="checkbox" data-g="' +
+          esc(S.seg + '|' + g.sub) + '"' + (gvis ? ' checked' : '') +
+          ' data-vis="' + gvis + '" data-n="' + g.items.length + '">' +
+          '<b>' + esc(g.sub) + '</b><span class="dim">' + gvis + '/' + g.items.length + '</span></label>' +
+          rows + '</div>';
+      }).join('');
+      return '<div class="mm-seg"><label class="mm-row mm-seg-row"><input type="checkbox" data-s="' +
+        esc(S.seg) + '"' + (nvis ? ' checked' : '') + ' data-vis="' + nvis + '" data-n="' + segItems.length + '">' +
+        '<b>' + esc(MC_SEG_NAME[S.seg] || S.seg) + '</b>' +
+        '<span class="dim">' + nvis + '/' + segItems.length + '</span></label>' + body + '</div>';
+    }).join('');
+    el.querySelectorAll('input[data-g],input[data-s]').forEach(cb => {
+      cb.indeterminate = +cb.dataset.vis > 0 && +cb.dataset.vis < +cb.dataset.n;
+    });
+  }
+  // 勾选：大组整段开关 / 小组开关 / 单字段开关（就地重绘面板，保持滚动位置）
+  memCmpEl.querySelector('#mcFields').addEventListener('click', (e) => {
+    const cb = e.target.closest('input');
+    if (!cb) return;
+    const root = memCmpEl.querySelector('#mcFields');
+    const sc = root.scrollTop;
+    const setF = (f, on) => { if (on) memCmpSel.add(f); else memCmpSel.delete(f); };
+    if (cb.dataset.s) {
+      memCmpUnion().forEach(f => { if (mcSegOf(f) === cb.dataset.s) setF(f, cb.checked); });
+    } else if (cb.dataset.g) {
+      const seg = cb.dataset.g.split('|')[0];
+      const sub = cb.dataset.g.split('|').slice(1).join('|');
+      memCmpUnion().forEach(f => { if (mcSegOf(f) === seg && mcSubOf(f) === sub) setF(f, cb.checked); });
+    } else if (cb.dataset.f) {
+      setF(cb.dataset.f, cb.checked);
+    } else return;
+    renderMemCmpFields();
+    root.scrollTop = sc;
+    drawMemCmp();
+  });
+  memCmpEl.querySelector('#mcClose').addEventListener('click', closeMemCmp);
+  mcCvEl.addEventListener('mousemove', (e) => {
+    const rect = mcCvEl.getBoundingClientRect();
+    memCmpCursorX = e.clientX - rect.left;
+    drawMemCmp();
+  });
+  mcCvEl.addEventListener('mouseleave', () => { memCmpCursorX = null; drawMemCmp(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memCmpEl.style.display !== 'none') {
+      e.stopPropagation();
+      closeMemCmp();
+    }
+  }, true);
+  const memCmpBtnEl = document.querySelector('#memCmpBtn');
+  if (memCmpBtnEl) memCmpBtnEl.addEventListener('click', openMemCmp);
+
+  // 每字段一行（行内各路共用刻度），行角游标读各路采样值；横轴 t+相对 run 开始的时长
+  const MC_ROW_H = 64;
+  function drawMemCmp() {
+    if (memCmpEl.style.display === 'none') return;
+    const ls = memCmpLanes();
+    const body = memCmpEl.querySelector('.mb-body');
+    const W = body.clientWidth;
+    const fields = memCmpUnion().filter(f => memCmpSel.has(f));
+    const axisH = 26;
+    const concH = ls.length * 30 + 6;   // 顶部并发占用带：每路一条，独占高度
+    const ctx = mcCvEl.getContext('2d');
+    const H = Math.max(160, concH + fields.length * MC_ROW_H + axisH);
+    prepCv(mcCvEl, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!fields.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      ctx.fillText('全部字段已隐藏——在下方勾选要对比的字段', 20, 30);
+      return;
+    }
+    const durMax = Math.max(...ls.map(({ l }) => memCmpDur(l)));
+    const x0 = 190, x1 = W - 58;  // 右侧留刻度槽
+    const xx = (relMs) => x0 + relMs / durMax * (x1 - x0);
+    // 行几何 + 各行纵轴刻度（各路该字段 range 的并集）
+    const rows = fields.map((f) => {
+      let yMin = Infinity, yMax = -Infinity;
+      ls.forEach(({ l }) => {
+        const rg = l.mem.range[f];
+        if (!rg) return;
+        if (rg[0] < yMin) yMin = rg[0];
+        if (rg[1] > yMax) yMax = rg[1];
+      });
+      if (!isFinite(yMin)) { yMin = 0; yMax = 1; }
+      const pad = (yMax - yMin) * 0.08 || Math.abs(yMax) * 0.05 || 1;
+      return { f, yMin: yMin - pad, yMax: yMax + pad };
+    });
+    // 并发占用：顶部单独一条带，每路按展示顺序上下排列，淡色；不再塞进每个字段行
+    const conc = ls.map(({ l }) => memCmpConc(l, durMax, 600));
+    const concMax = Math.max(1, ...conc.map(c => c.peak));
+    const CONC_LANE_H = 30;
+    ctx.font = '10px Consolas, monospace';
+    ctx.fillStyle = C.gutter;
+    ctx.fillRect(0, 0, W, concH);
+    ls.forEach(({ l, i }, k) => {
+      const bandY = 6 + k * CONC_LANE_H;
+      const base = bandY + CONC_LANE_H - 4;
+      const cs = conc[k].pts;
+      const cy = (c) => base - c / concMax * (CONC_LANE_H - 12);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
+      ctx.fillText(String.fromCharCode(65 + i) + ' 工具并发', x0 - 8, bandY + CONC_LANE_H / 2 + 3);
+      if (!cs || !cs.length) return;
+      ctx.beginPath();
+      ctx.moveTo(xx(cs[0][0]), base);
+      for (let j = 0; j < cs.length; j++) ctx.lineTo(xx(cs[j][0]), cy(cs[j][1]));
+      ctx.lineTo(xx(cs[cs.length - 1][0]), base);
+      ctx.closePath();
+      ctx.fillStyle = MC_COLORS[k % MC_COLORS.length] + '22';
+      ctx.fill();
+      ctx.strokeStyle = MC_COLORS[k % MC_COLORS.length] + '99';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+    rows.forEach((row, ri) => {
+      const y = concH + ri * MC_ROW_H;
+      const yy = (v) => (y + MC_ROW_H - 8) - (v - row.yMin) / (row.yMax - row.yMin) * (MC_ROW_H - 30);
+      ctx.fillStyle = C.bandBg;
+      ctx.fillRect(x0, y, x1 - x0, MC_ROW_H - 1);
+      // 刻度值移到画布右侧；左侧槽只放横排的 字段名+单位，避免两者在同一 x 处叠成一列
+      for (let k = 0; k <= 2; k++) {
+        const v = row.yMin + (row.yMax - row.yMin) * k / 2, py = yy(v);
+        ctx.fillStyle = C.gutterLine;
+        ctx.fillRect(x0, py, x1 - x0, 1);
+        ctx.fillStyle = C.dim;
+        ctx.textAlign = 'left';
+        ctx.fillText(fmtMem(v), x1 + 4, py + 3);
+      }
+      ctx.textAlign = 'right';
+      const label = row.f + '  ' + (memUnit(row.f) || '-');
+      ctx.fillStyle = C.text;
+      ctx.fillText(label, x0 - 8, y + MC_ROW_H / 2 + 4);
+      ls.forEach(({ l }, k) => {
+        const pts = l.mem.series[row.f];
+        if (!pts || !pts.length) return;
+        const anch = memCmpAnchor(l);
+        ctx.strokeStyle = MC_COLORS[k % MC_COLORS.length];
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        let started = false;
+        for (const pt of pts) {
+          const rel = pt[0] - anch;
+          if (rel < 0 || rel > durMax) continue;
+          const px = xx(rel), py = yy(pt[1]);
+          if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      });
+    });
+    const yEnd = concH + rows.length * MC_ROW_H;
+    // 游标：竖线 + 每路最近采样点 + 行角各路读数
+    if (memCmpCursorX != null && memCmpCursorX >= x0 && memCmpCursorX <= x1) {
+      const rel = (memCmpCursorX - x0) / (x1 - x0) * durMax;
+      ctx.fillStyle = '#ffffff55';
+      ctx.fillRect(memCmpCursorX, 0, 1, yEnd);
+      memCmpEl.querySelector('#mcRead').textContent = '游标 t+' + fmtDur(rel / 1000);
+      // 并发带游标点 + 读数：取游标时刻的 tool 并发值，点画在曲线上，数值贴点旁
+      ls.forEach(({ l, i }, k) => {
+        const cs = conc[k].pts;
+        if (!cs || !cs.length) return;
+        const idx = Math.max(0, Math.min(cs.length - 1, Math.round(rel / durMax * (cs.length - 1))));
+        const cc = cs[idx][1];
+        const bandY = 6 + k * CONC_LANE_H;
+        const base = bandY + CONC_LANE_H - 4;
+        const py = base - cc / concMax * (CONC_LANE_H - 12);
+        ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
+        ctx.beginPath();
+        ctx.arc(memCmpCursorX, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+        const tag = String.fromCharCode(65 + i) + ' ' + cc;
+        ctx.font = '10px Consolas, monospace';
+        const tw = ctx.measureText(tag).width;
+        const tx = Math.min(memCmpCursorX + 6, x1 - tw - 2);
+        ctx.fillStyle = 'rgba(8,11,17,0.85)';
+        ctx.fillRect(tx - 2, py - 9, tw + 4, 12);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
+        ctx.fillText(tag, tx, py);
+      });
+      rows.forEach((row, ri) => {
+        const y = concH + ri * MC_ROW_H;
+        const yy = (v) => (y + MC_ROW_H - 8) - (v - row.yMin) / (row.yMax - row.yMin) * (MC_ROW_H - 30);
+        ls.forEach(({ l }, k) => {
+          const pts = l.mem.series[row.f];
+          if (!pts || !pts.length) return;
+          const anch = memCmpAnchor(l);
+          let best = null, bd = Infinity;
+          for (const pt of pts) {
+            const d = Math.abs(pt[0] - anch - rel);
+            if (d < bd) { bd = d; best = pt; }
+          }
+          if (!best) return;
+          const px = xx(best[0] - anch), py = yy(best[1]);
+          ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
+          ctx.beginPath();
+          ctx.arc(px, py, 2.8, 0, Math.PI * 2);
+          ctx.fill();
+          // 读数贴在游标点旁：按路序上下错开，带半透明底衬防压线
+          const tag = String.fromCharCode(65 + ls[k].i) + ' ' + fmtMem(best[1]);
+          ctx.font = '10px Consolas, monospace';
+          const tw = ctx.measureText(tag).width;
+          const tx = Math.min(px + 6, x1 - tw - 2);
+          const ty = py - 8 - k * 12;
+          ctx.fillStyle = 'rgba(8,11,17,0.8)';
+          ctx.fillRect(tx - 2, ty - 9, tw + 4, 12);
+          ctx.textAlign = 'left';
+          ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
+          ctx.fillText(tag, tx, ty);
+        });
+      });
+    } else {
+      memCmpEl.querySelector('#mcRead').textContent = '';
+    }
+    // 底部时间轴：t+ 相对 run 开始的时长
+    ctx.textAlign = 'center';
+    ctx.font = '11px Consolas, monospace';
+    for (let k = 0; k <= 8; k++) {
+      const rel = durMax * k / 8, px = xx(rel);
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(px, yEnd, 1, axisH - 16);
+      ctx.fillStyle = C.dim;
+      ctx.fillText('t+' + fmtDur(rel / 1000), px, yEnd + axisH - 4);
+    }
+  }
+
+  /* ── 主渲染 / 启动 ──────────────────── */
+  function renderAll() {
+    renderLaneHeaders();
+    if (!state.lanes.length) return;
+    if (!laneOf() || !laneOf().payload) {
+      renderHeader();
+      renderSummary();
+      renderTree();
+      renderAnalysis();
+      drawAll();
+      return;
+    }
+    renderTree();
+    renderSummary();
+    renderHeader();
+    renderAnalysis();
+    drawAll();
+  }
+
+  window.addEventListener('resize', drawAll);
+
+  // URL 预设：?preset=1 自动把当前根目录下所有 run 配成多路元数据对比
+  // memlog 位置自动发现：run 目录根，或其下含 datalog 的子目录（host/measure）
+  async function findRunMemlog(runDir) {
+    try {
+      const j = await (await fetch('/api/memlog/ls?path=' + encodeURIComponent(runDir))).json();
+      if (j.error) return null;
+      const sep = j.path.includes('/') ? '/' : '\\';
+      const base = j.path.replace(/[\\\/]$/, '');
+      if (j.files && j.files.length) return base + sep + j.files[0].name;
+      for (const d of (j.dirs || [])) {
+        if (!d.has_mem) continue;
+        const sub = await (await fetch('/api/memlog/ls?path=' + encodeURIComponent(base + sep + d.name))).json();
+        if (!sub.error && sub.files && sub.files.length) {
+          return base + sep + d.name + sep + sub.files[0].name;
+        }
+      }
+    } catch (e) { /* 该文件无 memlog */ }
+    return null;
+  }
+  async function autoPresetCompare(payload, root) {
+    const WANT = [
+      'derived.cg_anon_mb', 'derived.swap_used_mb', 'mem.MemAvailable',
+      'mem.Active(anon)', 'mem.Inactive(anon)', 'vm.nr_active_anon',
+      'psi.cpu.some.avg10', 'psi.memory.some.avg10', 'psi.io.some.avg10',
+      'derived.oom_kill',
+    ];
+    const runs = payload.runs;
+    if (!runs || runs.length < 2) return;
+    while (state.lanes.length < runs.length) addLane(null);
+    const sep = root.includes('/') ? '/' : '\\';
+    const base = root.replace(/[\\\/]$/, '');
+    let loaded = 0;
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i];
+      // payload.root 必须指向该 run 的源目录：fetchSpans 靠它懒加载波形 span
+      applyPayload(state.lanes[i], { root: base + sep + r.id, lazy: true, runs: [r] });
+      const memPath = await findRunMemlog(base + sep + r.id);
+      if (memPath) { await loadMemlogFile(i, memPath); loaded++; }
+    }
+    if (loaded < 2) return;
+    openMemCmp();
+    const union = memCmpUnion();
+    memCmpSel = new Set(WANT.filter(f => union.includes(f)));
+    renderMemCmpFields();
+    requestAnimationFrame(drawMemCmp);
+  }
+
+  async function boot() {
+    addLane(null);
+    renderHeader();
+    // 检测 server 模式
+    try {
+      const res = await fetch('/api/ping');
+      if (res.ok) serverMode = true;
+    } catch (e) { serverMode = false; }
+
+    if (serverMode) {
+      renderHeader();
+      try {
+        const st = await (await fetch('/api/status')).json();
+        // 服务端模式一律以实时解析为准（含 dN 重跑编号）；data.js 只是旧的离线快照，不在该模式下兜底
+        const root = st.root || (window.SCOPE_DATA ? window.SCOPE_DATA.root : null);
+        if (root) {
+          const res = await fetch('/api/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: root }),
+          });
+          const payload = await res.json();
+          if (!payload.error && applyPayload(state.lanes[0], payload)) {
+            if (new URLSearchParams(location.search).get('preset')) {
+              autoPresetCompare(payload, root);
+            }
+            return;
+          }
+        }
+      } catch (e) { /* 落到下面 */ }
+      renderAll();
+      openModal(0);
+    } else if (window.SCOPE_DATA) {
+      applyPayload(state.lanes[0], window.SCOPE_DATA);
+    } else {
+      $('#rootPath').textContent = '无数据 —— 请运行 python server.py 或 make_data.py';
+    }
+  }
+
+  // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
+  window.scopeDebug = { state, draw, renderAll, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
+
+  boot();
+})();
+</script>
+</body>
+</html>
