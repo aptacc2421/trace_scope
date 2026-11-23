@@ -3633,6 +3633,8 @@
     const bars = chartRunBars(cols, baseCi);
     const rows = vis.slice().sort((a, b) =>
       String(a.issue || a.trace).localeCompare(String(b.issue || b.trace)) || (a.samp - b.samp));
+    // 切轨迹或筛选后，旧的选中段已不在当前图里，读数会串到别的轨迹上
+    if (state.cmpSel && !rows.some(r => r.label === state.cmpSel.row)) state.cmpSel = null;
     // 每格每回放均值
     const val = (bar, key) => {
       const c = bar.cells.get(key);
