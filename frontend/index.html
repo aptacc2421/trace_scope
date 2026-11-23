@@ -299,6 +299,60 @@
   .modal-status { min-height: 20px; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .modal-status .err { color: var(--danger); }
   .modal-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+
+  /* ── 标注面板（顶栏收纳标色模式） ─────── */
+  .mark-wrap { position: relative; }
+  .mark-pop {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+    display: flex; flex-direction: column; gap: 6px; padding: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px #0008; min-width: 180px;
+  }
+  .mark-pop .btn { text-align: left; }
+  #markDot { margin-left: 5px; color: var(--cursor); font-size: 10px; }
+  #markDot:empty { margin: 0; }
+
+  /* ── 对比视图 ─────────────────────────── */
+  .cmp-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .cmp-bar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex: none;
+    background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .cmp-bar .cmp-lbl { color: var(--muted); font-size: 12px; }
+  .cmp-bar input[type="text"], .cmp-bar input:not([type]) {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font: 12px var(--mono); width: 180px;
+  }
+  .cmp-chk { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .cmp-scroll { flex: 1; overflow: auto; min-height: 0; }
+  table.cmp { border-collapse: collapse; font: 12px var(--mono); width: max-content; min-width: 100%; }
+  table.cmp th, table.cmp td {
+    border-bottom: 1px solid var(--border); padding: 4px 10px; text-align: right;
+    white-space: nowrap;
+  }
+  table.cmp th {
+    position: sticky; top: 0; z-index: 5; background: var(--panel-2); color: var(--muted);
+    font-weight: 400; font-size: 11px;
+  }
+  table.cmp th.gsep, table.cmp td.gsep { border-left: 1px solid var(--border); }
+  table.cmp td.key, table.cmp th.key {
+    text-align: left; position: sticky; left: 0; background: var(--bg); z-index: 4;
+    border-right: 1px solid var(--border); font-family: var(--mono);
+  }
+  table.cmp th.key { z-index: 6; background: var(--panel-2); }
+  table.cmp tr:hover td { background: #1a2030; }
+  table.cmp tr:hover td.key { background: #1a2030; }
+  table.cmp td.mult { font-weight: 600; cursor: default; }
+  table.cmp td.dimv { color: var(--dim); }
+  .cmp-foot {
+    display: flex; gap: 24px; padding: 10px 14px; flex-wrap: wrap;
+    border-top: 1px solid var(--border); background: var(--panel); flex: none;
+  }
+  .cmp-foot .blk { display: flex; flex-direction: column; gap: 2px; }
+  .cmp-foot .blk b { font: 600 12px var(--mono); color: var(--text); }
+  .cmp-foot .blk span { color: var(--muted); font-size: 11px; }
+  .cmp-foot .blk .acc { color: var(--accent); }
+  .cmp-foot .blk .warn { color: var(--cursor); }
 </style>
 </head>
 <body>
@@ -318,10 +372,19 @@
     <button data-mode="abs">绝对时间</button>
     <button data-mode="rel">对齐 t=0</button>
   </div>
-  <button class="btn" id="cmdModeBtn" title="开启后：点色块=高亮所有已显示 lane 里的同命令块（亮紫，仅命令相同、不限轨迹和步号）；关闭=同sub轨迹标色（红=同步号同命令严格对应 / 橙=重试 / 黄=同步号不同命令）。两套标色共存可叠加">同命令对照</button>
-  <button class="btn" id="markOnlyBtn" disabled title="只显示同sub轨迹标色块（红/橙/黄，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）">只看标色块</button>
-  <button class="btn" id="cmdOnlyBtn" disabled title="只显示同命令高亮块（亮紫，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）。启用条件：开启「同命令对照」后点选一个色块（已有选中块时可直接点本按钮自动补生成标集）">只看相同命令</button>
-  <button class="btn" id="bandOnlyBtn" disabled title="并发占用区：未标色执行压暗成灰，标色块自身时段高亮上层（与上方小块红时间对齐；跟随当前只看的高亮集，未只看时取两套并集）">占用只看高亮</button>
+  <div class="seg" id="viewSeg" title="示波=时间轴波形；对比=跨 run 轨迹对比表">
+    <button data-view="scope">示波</button>
+    <button data-view="compare">对比</button>
+  </div>
+  <div class="mark-wrap">
+    <button class="btn" id="markMenuBtn" title="标注/高亮模式收纳：同命令对照、只看标色块、只看相同命令、占用只看高亮">标注<span id="markDot"></span></button>
+    <div class="mark-pop" id="markPop" style="display:none">
+      <button class="btn" id="cmdModeBtn" title="开启后：点色块=高亮所有已显示 lane 里的同命令块（亮紫，仅命令相同、不限轨迹和步号）；关闭=同sub轨迹标色（红=同步号同命令严格对应 / 橙=重试 / 黄=同步号不同命令）。两套标色共存可叠加">同命令对照</button>
+      <button class="btn" id="markOnlyBtn" disabled title="只显示同sub轨迹标色块（红/橙/黄，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）">只看标色块</button>
+      <button class="btn" id="cmdOnlyBtn" disabled title="只显示同命令高亮块（亮紫，紧凑堆叠）；再点/Esc 恢复（此模式下点击波形不退出）。启用条件：开启「同命令对照」后点选一个色块（已有选中块时可直接点本按钮自动补生成标集）">只看相同命令</button>
+      <button class="btn" id="bandOnlyBtn" disabled title="并发占用区：未标色执行压暗成灰，标色块自身时段高亮上层（与上方小块红时间对齐；跟随当前只看的高亮集，未只看时取两套并集）">占用只看高亮</button>
+    </div>
+  </div>
   <button class="btn" id="resetBtn">复位</button>
 </header>
 
@@ -364,6 +427,24 @@
     </div>
     <div class="col-b" id="analysis"></div>
   </div>
+</div>
+
+<!-- 对比视图（跨 run 轨迹对比表 + 倍数热力） -->
+<div class="cmp-view" id="cmpView" style="display:none">
+  <div class="cmp-bar">
+    <span class="cmp-lbl">列</span><span id="cmpCols" class="cmp-lbl"></span>
+    <span class="cmp-lbl">基线</span>
+    <select id="cmpBase"></select>
+    <input id="cmpSearch" placeholder="搜索 issue / 轨迹 …">
+    <label class="cmp-chk"><input type="checkbox" id="cmpFirst"> 同键只取首次</label>
+    <button class="btn" id="cmpMdBtn">导出 md</button>
+    <button class="btn" id="cmpCsvBtn">导出 CSV</button>
+    <span class="cmp-lbl" id="cmpHint"></span>
+  </div>
+  <div class="cmp-scroll">
+    <table class="cmp" id="cmpTable"></table>
+  </div>
+  <div class="cmp-foot" id="cmpFoot"></div>
 </div>
 
 <!-- 打开文件夹弹窗 -->
@@ -568,6 +649,8 @@
 
   const state = {
     mode: 'rel',
+    screen: 'scope',     // 顶层视图：scope=示波（波形）| compare=对比（宽表）
+    cmpBase: null,       // 对比基线列（lane idx）；null=第一列
     sort: 'group',
     spanFilter: 'all',
     search: '',
@@ -586,6 +669,8 @@
   try {
     const m = localStorage.getItem('trace_scope.mode');
     if (m === 'abs' || m === 'rel') state.mode = m;
+    const s = localStorage.getItem('trace_scope.screen');
+    if (s === 'compare') state.screen = s;
   } catch (e) { /* 忽略 */ }
   let drag = null;
 
@@ -653,6 +738,13 @@
           .sort((a, b) => (b.e - b.s) - (a.e - a.s)).slice(0, 8)
           .map(sp => ({ t: 'gen', i: sp.i, s: sp.s, e: sp.e, d: (sp.e - sp.s) / 1000,
             pt: sp.pt, ct: sp.ct, tps: sp.tps, ttft: sp.ttft }));
+      }
+      if (!ep.tstat) {
+        const durs = ep.spans.filter(sp => sp.t === 'tool').map(sp => (sp.e - sp.s) / 1000);
+        const keep = durs.filter(d => d < 299);
+        ep.tstat = { n: durs.length, sum: durs.reduce((a, b) => a + b, 0),
+          to: durs.length - keep.length, nc: keep.length,
+          sc: keep.reduce((a, b) => a + b, 0) };
       }
       for (const tp of ep.top) tp.k = ep.id + '|gen|' + tp.i + '|' + tp.s + '|' + tp.e;
     }
@@ -1009,16 +1101,28 @@
     }
   }
 
+  let lastTreeIdx = null; // shift 范围选的锚点行（DOM 顺序）
   $('#tree').addEventListener('click', (e) => {
     const rowEl = e.target.closest('.row');
     const lane = laneOf();
     if (!rowEl || !lane) return;
+    const rows = Array.from($('#tree').querySelectorAll('.row'));
+    const idx = rows.indexOf(rowEl);
     const cb = rowEl.querySelector('input');
     if (e.target.tagName !== 'INPUT') cb.checked = !cb.checked;
     const turnOn = cb.checked;
-    for (const id of rowEl.dataset.gid.split(',')) {
-      if (turnOn) lane.selected.add(id); else lane.selected.delete(id);
+    let targets = [rowEl];
+    if (e.shiftKey && lastTreeIdx != null && lastTreeIdx !== idx) {
+      const [a, b] = lastTreeIdx < idx ? [lastTreeIdx, idx] : [idx, lastTreeIdx];
+      targets = rows.slice(a, b + 1); // shift：锚点到当前行整段应用同一开关状态
     }
+    for (const el of targets) {
+      for (const id of el.dataset.gid.split(',')) {
+        if (turnOn) lane.selected.add(id); else lane.selected.delete(id);
+      }
+      el.querySelector('input').checked = turnOn;
+    }
+    lastTreeIdx = idx;
     if (lane.activeEp && !lane.selected.has(lane.activeEp.id)) lane.activeEp = null;
     fitView();
     renderAll();
@@ -2096,6 +2200,9 @@
       esc(r.id) + '</button>').join('');
     $('#modeSeg').querySelectorAll('button').forEach(b =>
       b.classList.toggle('on', b.dataset.mode === state.mode));
+    $('#viewSeg').querySelectorAll('button').forEach(b =>
+      b.classList.toggle('on', b.dataset.view === state.screen));
+    $('#markDot').textContent = (state.cmdMode || state.onlyView || state.bandOnly || state.markFam || state.markCmd) ? '●' : '';
     const mb = $('#markOnlyBtn');
     mb.disabled = !state.markFam;
     mb.classList.toggle('primary', state.onlyView === 'fam');
@@ -2174,6 +2281,44 @@
     state.cmdMode = !state.cmdMode; // 两套标色共存：切换不清单色
     renderHeader();
     drawAll();
+  });
+  /* ── 视图切换 / 标注面板 / 对比控件 ── */
+  function setScreen(s) {
+    if (state.screen === s) return;
+    state.screen = s;
+    try { localStorage.setItem('trace_scope.screen', s); } catch (err) { /* 忽略 */ }
+    renderAll();
+    renderHeader();
+  }
+  $('#viewSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) setScreen(b.dataset.view);
+  });
+  $('#markMenuBtn').addEventListener('click', () => {
+    const p = $('#markPop');
+    p.style.display = p.style.display === 'none' ? 'flex' : 'none';
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.mark-wrap')) $('#markPop').style.display = 'none';
+  });
+  $('#cmpBase').addEventListener('change', () => { state.cmpBase = +$('#cmpBase').value; renderCmp(); });
+  $('#cmpSearch').addEventListener('input', () => renderCmp());
+  $('#cmpFirst').addEventListener('change', () => renderCmp());
+  $('#cmpMdBtn').addEventListener('click', exportCmpMd);
+  $('#cmpCsvBtn').addEventListener('click', exportCmpCsv);
+  $('#cmpCols').addEventListener('change', (e) => {
+    const sel = e.target.closest('select[data-col]');
+    if (!sel) return;
+    const lane = state.lanes[+sel.dataset.col];
+    if (!lane) return;
+    if (sel.value === '*') lane.cmpRun = '*';
+    else {
+      lane.cmpRun = null;
+      lane.runId = sel.value;
+      lane.activeEp = null; lane.activeSpan = null;
+      selectAll(lane);
+    }
+    fitView(); renderAll();
   });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && clearMark()) { renderHeader(); drawAll(); updateAllReadouts(state.cursorT); }
@@ -3168,9 +3313,257 @@
     }
   }
 
+  /* ── 对比视图：跨 run 轨迹宽表（per-traj 口径）+ 倍数热力 ──────────
+     列 = 各 lane（每路取当前 run，或「全部 run」聚合）；行 = (issue, sample) 轨迹键（famKey）。
+     单次耗时 = 剔除 ≥299s 超时调用后的池化均值（tstat.sc/tstat.nc）；倍数 = 该列单次均值 ÷ 基线单次均值。
+     汇总口径（calc.md）：同键只取首次；微平均 = Σtool/Σwall；逐条平均 = Σ(tool/wall)/n；
+     分层宏平均 M = 各 trace 类型内和之比再等权平均；N = M/M_base（基线列 N=1）。 */
+  function cmpLaneCols() {
+    const cols = [];
+    state.lanes.forEach((lane, idx) => {
+      if (!lane.payload) return;
+      const all = lane.cmpRun === '*';
+      const r = all ? null : run(lane);
+      if (!all && !r) return;
+      let eps = [];
+      if (all) { for (const rr of lane.payload.runs) eps = eps.concat(rr.episodes); }
+      else eps = r.episodes;
+      cols.push({ idx, lane, name: laneLetter(idx) + '·' + (all ? '全部run' : lane.runId),
+        runs: lane.payload.runs.map(x => x.id), eps });
+    });
+    return cols;
+  }
+
+  function colMetrics(eps) {
+    const byKey = new Map();
+    for (const ep of eps) {
+      const k = famKey(ep);
+      const a = byKey.get(k) || [];
+      a.push(ep); byKey.set(k, a);
+    }
+    const firsts = [...byKey.values()].map(a => a.slice().sort((x, y) => (x.start || 0) - (y.start || 0))[0]);
+    let wall = 0, tool = 0;
+    const per = [], byTrace = new Map();
+    for (const ep of firsts) {
+      wall += ep.wall || 0; tool += ep.tool_s || 0;
+      if (ep.wall > 0) per.push((ep.tool_s || 0) / ep.wall);
+      const a = byTrace.get(ep.trace) || [0, 0];
+      a[0] += ep.tool_s || 0; a[1] += ep.wall || 0;
+      byTrace.set(ep.trace, a);
+    }
+    const rhos = [...byTrace.values()].filter(a => a[1] > 0).map(a => a[0] / a[1]);
+    return {
+      n: firsts.length, k: byTrace.size, wall, tool,
+      micro: wall > 0 ? tool / wall : null,
+      perAvg: per.length ? per.reduce((a, b) => a + b, 0) / per.length : null,
+      macro: rhos.length ? rhos.reduce((a, b) => a + b, 0) / rhos.length : null,
+    };
+  }
+
+  function cmpData() {
+    const cols = cmpLaneCols();
+    const rowMap = new Map();
+    const firstOnly = $('#cmpFirst').checked;
+    cols.forEach((c, ci) => {
+      const byKey = new Map();
+      for (const ep of c.eps) {
+        const k = famKey(ep);
+        const a = byKey.get(k) || [];
+        a.push(ep); byKey.set(k, a);
+      }
+      for (const [k, list] of byKey) {
+        list.sort((x, y) => (x.start || 0) - (y.start || 0));
+        const use = firstOnly ? list.slice(0, 1) : list;
+        let tool = 0, calls = 0, sc = 0, nc = 0, to = 0, wall = 0, gen = 0, n = 0, steps = 0;
+        for (const ep of use) {
+          const t = ep.tstat || { n: 0, to: 0, nc: 0, sc: 0 };
+          tool += ep.tool_s || 0; wall += ep.wall || 0; gen += ep.gen_s || 0;
+          calls += t.n; sc += t.sc; nc += t.nc; to += t.to;
+          n++; steps += ep.n_steps || 0;
+        }
+        if (!rowMap.has(k)) rowMap.set(k, {
+          key: k,
+          label: (list[0].issue || list[0].trace) + '/' + list[0].samp,
+          trace: list[0].trace, cols: {},
+        });
+        rowMap.get(k).cols[ci] = { tool, calls, sc, nc, to, wall, gen, n, steps,
+          mean: nc > 0 ? sc / nc : null };
+      }
+    });
+    return { cols, rows: [...rowMap.values()] };
+  }
+
+  function heatBg(v) {
+    if (v == null || !isFinite(v)) return '';
+    if (v >= 1) {
+      const a = Math.min(1, (v - 1) / 4);
+      return 'rgba(229,96,108,' + (0.10 + 0.5 * a).toFixed(3) + ')';
+    }
+    const a = Math.min(1, (1 - v) / 0.8);
+    return 'rgba(79,142,247,' + (0.08 + 0.4 * a).toFixed(3) + ')';
+  }
+  const fmtNum = (v, d) => (v == null || !isFinite(v)) ? '-' :
+    (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : Number(v).toFixed(d == null ? 2 : d));
+
+  function renderCmp() {
+    const cols = cmpLaneCols();
+    if (!cols.length) {
+      $('#cmpCols').innerHTML = ''; $('#cmpBase').innerHTML = '';
+      $('#cmpTable').innerHTML = '<tr><td class="key">未加载数据 —— 回「示波」打开数据（可多路），或点「＋ 添加一路」再回来</td></tr>';
+      $('#cmpFoot').innerHTML = ''; $('#cmpHint').textContent = '';
+      return;
+    }
+    $('#cmpCols').innerHTML = cols.map(c =>
+      '<select data-col="' + c.idx + '" style="margin-right:8px" title="该列取哪路的哪个 run">' +
+      c.runs.map(id => '<option value="' + esc(id) + '"' +
+        (c.lane.cmpRun !== '*' && c.lane.runId === id ? ' selected' : '') + '>' + esc(laneLetter(c.idx) + '·' + id) + '</option>').join('') +
+      '<option value="*"' + (c.lane.cmpRun === '*' ? ' selected' : '') + '>' + esc(laneLetter(c.idx)) + '·全部run</option></select>').join('');
+    const baseIdx = (state.cmpBase != null && cols.some(c => c.idx === +state.cmpBase)) ? +state.cmpBase : cols[0].idx;
+    state.cmpBase = baseIdx;
+    const baseCi = cols.findIndex(c => c.idx === baseIdx);
+    $('#cmpBase').innerHTML = cols.map((c, ci) =>
+      '<option value="' + c.idx + '"' + (ci === baseCi ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('');
+    const { rows } = cmpData();
+    const q = ($('#cmpSearch').value || '').toLowerCase();
+    const vis = rows.filter(r => !q || r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    let html = '<tr><th class="key">轨迹 (issue/sample)</th>' + cols.map((c, ci) =>
+      '<th class="gsep" colspan="' + (ci === baseCi ? 3 : 4) + '">' + esc(c.name) + (ci === baseCi ? ' · 基线' : '') + '</th>').join('') + '</tr>' +
+      '<tr><th class="key"></th>' + cols.map((c, ci) =>
+      '<th class="gsep">工具s</th><th>调用</th><th>单次s</th>' + (ci === baseCi ? '' : '<th>倍数</th>')).join('') + '</tr>';
+    for (const r of vis) {
+      html += '<tr><td class="key">' + esc(r.label) + '</td>';
+      const bv = r.cols[baseCi];
+      cols.forEach((c, ci) => {
+        const v = r.cols[ci];
+        html += '<td class="gsep">' + (v ? fmtNum(v.tool, 0) : '<span class="dimv">-</span>') + '</td>';
+        html += '<td>' + (v ? fmtNum(v.calls, 0) : '<span class="dimv">-</span>') + '</td>';
+        html += '<td>' + (v && v.mean != null ? fmtNum(v.mean, 2) : '<span class="dimv">-</span>') +
+          (v && v.to ? '<span class="dimv" title="' + v.to + ' 次 ≥299s 超时已剔除"> t' + v.to + '</span>' : '') + '</td>';
+        if (ci === baseCi) return;
+        const mult = (v && v.mean != null && bv && bv.mean > 0) ? v.mean / bv.mean : null;
+        html += '<td class="mult" style="background:' + heatBg(mult) + '" title="' +
+          (mult == null ? '无基线数据' : mult.toFixed(2) + '×') + '">' +
+          (mult == null ? '-' : (mult >= 10 ? mult.toFixed(0) : mult.toFixed(2))) + '</td>';
+      });
+      html += '</tr>';
+    }
+    $('#cmpTable').innerHTML = html || '<tr><td class="key">无匹配轨迹</td></tr>';
+    $('#cmpHint').textContent = vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' + cols[baseCi].name + ') · ≥299s 超时剔除';
+    const foot = cols.map((c, ci) => {
+      const m = colMetrics(c.eps);
+      const bm = ci === baseCi ? m : colMetrics(cols[baseCi].eps);
+      const N = (m.macro != null && bm.macro > 0) ? m.macro / bm.macro : null;
+      return '<div class="blk"><b>' + esc(c.name) + (ci === baseCi ? ' · 基线' : '') + '</b>' +
+        '<span>键 ' + m.n + ' · 类型 ' + m.k + ' · Σwall ' + fmtDur(m.wall) + '</span>' +
+        '<span>σ_tool 微平均 <b class="acc">' + (m.micro == null ? '-' : (m.micro * 100).toFixed(1) + '%') + '</b></span>' +
+        '<span>逐条 ' + (m.perAvg == null ? '-' : (m.perAvg * 100).toFixed(1) + '%') + ' · 宏平均 M ' + (m.macro == null ? '-' : (m.macro * 100).toFixed(1) + '%') + '</span>' +
+        '<span class="' + (N != null && N > 1.2 ? 'warn' : '') + '">N = M/M_base ' + (N == null ? '-' : N.toFixed(3)) + '</span></div>';
+    });
+    $('#cmpFoot').innerHTML = foot.join('');
+  }
+
+  function dlFile(name, text, mime) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: mime || 'text/plain;charset=utf-8' }));
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  function exportCmpCsv() {
+    const cols = cmpLaneCols();
+    const { rows } = cmpData();
+    const baseIdx = (state.cmpBase != null && cols.some(c => c.idx === +state.cmpBase)) ? +state.cmpBase : (cols[0] && cols[0].idx);
+    const baseCi = cols.findIndex(c => c.idx === baseIdx);
+    const q = ($('#cmpSearch').value || '').toLowerCase();
+    const vis = rows.filter(r => !q || r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const head = ['轨迹'];
+    cols.forEach((c, ci) => {
+      head.push(c.name + ' 工具s', c.name + ' 调用', c.name + ' 单次s', c.name + ' 超时');
+      if (ci !== baseCi) head.push(c.name + ' 倍数');
+    });
+    const lines = [head.join(',')];
+    for (const r of vis) {
+      const cells = [r.label];
+      const bv = r.cols[baseCi];
+      cols.forEach((c, ci) => {
+        const v = r.cols[ci];
+        cells.push(v ? fmtNum(v.tool, 0) : '', v ? fmtNum(v.calls, 0) : '',
+          v && v.mean != null ? v.mean.toFixed(2) : '', v ? String(v.to) : '');
+        if (ci !== baseCi) {
+          const mult = (v && v.mean != null && bv && bv.mean > 0) ? v.mean / bv.mean : null;
+          cells.push(mult == null ? '' : mult.toFixed(2));
+        }
+      });
+      lines.push(cells.join(','));
+    }
+    dlFile('cmp-' + Date.now() + '.csv', '﻿' + lines.join('\n'), 'text/csv;charset=utf-8');
+  }
+
+  function exportCmpMd() {
+    const cols = cmpLaneCols();
+    const { rows } = cmpData();
+    const baseIdx = (state.cmpBase != null && cols.some(c => c.idx === +state.cmpBase)) ? +state.cmpBase : (cols[0] && cols[0].idx);
+    const baseCi = cols.findIndex(c => c.idx === baseIdx);
+    const baseCol = cols[baseCi];
+    const q = ($('#cmpSearch').value || '').toLowerCase();
+    const vis = rows.filter(r => !q || r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const kTypes = new Set(rows.map(r => r.trace));
+    let md = '# ' + rows.length + ' 条轨迹逐条对比\n\n' +
+      '## 口径\n\n' +
+      '- 每条轨迹 = (issue_id, sample_idx)，共 ' + rows.length + ' 条（' + kTypes.size + ' 个类型）。\n' +
+      '- 单次耗时 = 该轨迹所有工具调用 (结束 − 开始) 的总和 ÷ 调用次数；单次 ≥ 299 s 视为超时不计入单次均值，单独统计条数（表内 t 后缀）。\n' +
+      '- 重复记录：' + ($('#cmpFirst').checked ? '同键只取第一次。' : '同键多次出现池化累计，单次耗时为池化均值。') + '\n' +
+      '- 倍数 = 本次单次耗时 ÷ 基线单次耗时（基线：' + baseCol.name + '）。\n\n' +
+      '## 表格\n\n| 轨迹 |';
+    md += cols.map(c => ' ' + c.name + ' 工具s | ' + c.name + ' 调用 | ' + c.name + ' 单次s |' +
+      (c.idx === baseCol.idx ? '' : ' ' + c.name + ' 倍数 |')).join('');
+    md += '\n| --- |' + cols.map(c => ' ---: | ---: | ---: |' + (c.idx === baseCol.idx ? '' : ' ---: |')).join('');
+    for (const r of vis) {
+      md += '\n| ' + r.label + ' |';
+      const bv = r.cols[baseCi];
+      cols.forEach((c, ci) => {
+        const v = r.cols[ci];
+        md += ' ' + (v ? fmtNum(v.tool, 0) : '-') + ' | ' + (v ? fmtNum(v.calls, 0) : '-') + ' | ' +
+          (v && v.mean != null ? fmtNum(v.mean, 2) + (v.to ? ' t' + v.to : '') : '-') + ' |';
+        if (ci !== baseCi) {
+          const mult = (v && v.mean != null && bv && bv.mean > 0) ? v.mean / bv.mean : null;
+          md += ' ' + (mult == null ? '-' : mult.toFixed(2)) + ' |';
+        }
+      });
+    }
+    md += '\n\n## 汇总（calc.md 口径：同键只取首次）\n\n' +
+      '| 列 | 键数 | 类型数 | Σwall | σ_tool 微平均 | 逐条平均 | 分层宏平均 M | N=M/M_base |\n' +
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n';
+    cols.forEach((c, ci) => {
+      const m = colMetrics(c.eps);
+      const bm = ci === baseCi ? m : colMetrics(cols[baseCi].eps);
+      const N = (m.macro != null && bm.macro > 0) ? m.macro / bm.macro : null;
+      md += '| ' + c.name + (ci === baseCi ? '（基线）' : '') + ' | ' + m.n + ' | ' + m.k + ' | ' + fmtDur(m.wall) +
+        ' | ' + (m.micro == null ? '-' : (m.micro * 100).toFixed(1) + '%') +
+        ' | ' + (m.perAvg == null ? '-' : (m.perAvg * 100).toFixed(1) + '%') +
+        ' | ' + (m.macro == null ? '-' : (m.macro * 100).toFixed(1) + '%') +
+        ' | ' + (N == null ? '-' : N.toFixed(3)) + ' |\n';
+    });
+    dlFile('per-traj-' + Date.now() + '.md', md);
+  }
+
   /* ── 主渲染 / 启动 ──────────────────── */
   function renderAll() {
     renderLaneHeaders();
+    if (state.screen === 'compare') {
+      document.querySelector('.main').style.display = 'none';
+      $('#summary').style.display = 'none';
+      $('#cmpView').style.display = 'flex';
+      renderCmp();
+      return;
+    }
+    document.querySelector('.main').style.display = '';
+    $('#summary').style.display = '';
+    $('#cmpView').style.display = 'none';
     if (!state.lanes.length) return;
     if (!laneOf() || !laneOf().payload) {
       renderHeader();
@@ -3276,7 +3669,7 @@
   }
 
   // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
-  window.scopeDebug = { state, draw, renderAll, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
+  window.scopeDebug = { state, draw, renderAll, renderCmp, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
 
   boot();
 })();

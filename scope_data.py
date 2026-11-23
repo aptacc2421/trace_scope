@@ -99,6 +99,18 @@ def _span_stats(spans):
     return st
 
 
+def _tool_call_stats(spans, to_s=299.0):
+    """工具调用单次耗时口径（per-traj 宽表 / calc.md §8）：
+    n/sum=全量条数与累计秒；to=≥299s 的超时条数；nc/sc=剔除超时后的条数/累计秒（单次均值=sc/nc）。"""
+    durs = [(sp["e"] - sp["s"]) / 1000 for sp in spans if sp["t"] == "tool"]
+    keep = [d for d in durs if d < to_s]
+    return {
+        "n": len(durs), "sum": round(sum(durs), 3),
+        "to": len(durs) - len(keep),
+        "nc": len(keep), "sc": round(sum(keep), 3),
+    }
+
+
 def _top_gen(spans, n=8):
     """最慢推理段 TOP-N（全局 TOP-N 必落在各 episode TOP-N 的并集里）。"""
     gens = sorted((sp for sp in spans if sp["t"] == "gen"),
@@ -190,6 +202,7 @@ def build_episode(ep, with_spans=True, src=None):
         "tiv": _merge_iv([sp for sp in spans if sp["t"] == "tool"], start, end, fallback=False),
                                               # 仅 tool span 合并（沙箱内实际占用口径）；无工具调用为空
         "ag": _span_stats(spans),             # gen/tool 块耗时 [条数, 累计秒, 最大秒]
+        "tstat": _tool_call_stats(spans),     # 工具单次耗时口径（300s 超时剔除，宽表/对比用）
         "top": _top_gen(spans),               # 最慢推理段 TOP-8
     }
     # 文件来源：仅服务端按需读取 spans 时用，不下发概要层；src=(run_dir, file_path)
@@ -245,17 +258,19 @@ def load_run(run_dir: Path, with_spans: bool = True):
             src = ("manifest", str(manifest), i)
         episodes.append(build_episode(ep, with_spans, src))
 
-    # records 里有、manifest 没有的 episode 补进来
-    have = {(e["trace"], e["task"], e["samp"]) for e in episodes}
+    # records 里有、manifest 没用到的 episode 全部补进来。
+    # 同键多文件 = 重跑副本（数据命名约定 __dN 文件名后缀），一并收入，
+    # 由末尾 __dN 重命名区分；已被 take_src 分配给 manifest 条目的文件不重复加。
+    used_files = {e["_src"][1] for e in episodes if e.get("_src") and e["_src"][0] == "file"}
     for f in sorted(rec_dir.glob("*.json")) if rec_dir.is_dir() else []:
+        if str(f) in used_files:
+            continue
         try:
             ep = build_episode(json.loads(f.read_text(encoding="utf-8")),
                                with_spans, ("file", str(f)))
         except (json.JSONDecodeError, OSError):
             continue
-        if (ep["trace"], ep["task"], ep["samp"]) not in have:
-            episodes.append(ep)
-            have.add((ep["trace"], ep["task"], ep["samp"]))
+        episodes.append(ep)
 
     # 逐样本记录直接落在 run 目录（命名：<trace>__tN__sM.json）
     for f in sorted(run_dir.glob("*.json")):
