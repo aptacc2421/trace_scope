@@ -449,6 +449,7 @@
     word-break: break-all;
   }
   .gsp-name .b { color: var(--accent); }
+  .gsp-name .to { color: var(--cursor); }
 </style>
 </head>
 <body>
@@ -2422,7 +2423,7 @@
     const sg = e.target.closest('.sg');
     if (!sg) return;
     const d = sg.dataset;
-    state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk };
+    state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk, to: d.to, tos: d.tos };
     const box = $('#cmpChart');
     box.querySelectorAll('.sg').forEach(s => s.classList.remove('sel'));
     sg.classList.add('sel');
@@ -3560,9 +3561,13 @@
       for (const [k, list] of byKey) {
         list.sort((x, y) => (x.start || 0) - (y.start || 0));
         const use = firstOnly ? list.slice(0, 1) : list;
-        let g = 0, t = 0, w = 0;
-        for (const ep of use) { g += ep.gen_s || 0; t += ep.tool_s || 0; w += ep.wall || 0; }
-        cells.set(k, { g, t, w, n: use.length });
+        let g = 0, t = 0, w = 0, to = 0, tos = 0;
+        for (const ep of use) {
+          g += ep.gen_s || 0; t += ep.tool_s || 0; w += ep.wall || 0;
+          const ts = ep.tstat;
+          if (ts) { to += ts.to || 0; tos += Math.max(0, (ts.sum || 0) - (ts.sc || 0)); }
+        }
+        cells.set(k, { g, t, w, n: use.length, to, tos });
       }
       return cells;
     };
@@ -3605,13 +3610,23 @@
   const PLOT_H = 320;
 
   const CMP_HINT = '点击柱段（推理/工具）查看占比 · 纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发（同在跑 episode 峰值）升序';
+  /* 卡满超时上限的工具时间：固定等待，与沙箱配额无关，必须单独标出，
+     否则比 mem/cpu 配额时看到的是 300s × 次数这个常数，而不是真实计算差异。 */
+  function toNote(v, sep) {
+    if (!v || !(v.to > 0.001)) return '';
+    const n = v.to % 1 ? v.to.toFixed(1) : String(Math.round(v.to));
+    return (sep == null ? ' · ' : sep) + '超时 ' + n + ' 次 ' + fmtDur(v.tos);
+  }
+
   function cmpSelText(sel) {
     const g = +sel.g || 0, t = +sel.t || 0, tot = g + t || 1;
     return (sel.row || '') + ' · ' + (sel.col || '') + ' · ' +
       (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + (g / tot * 100).toFixed(1) + '%) · ' +
       (sel.kind === 't' ? '▸' : '') + '工具 ' + fmtDur(t) + ' (' + (t / tot * 100).toFixed(1) + '%) · ' +
       '每回放合计 ' + fmtDur(tot) + ' · 回放 ' + (sel.n || '1') + ' · ' +
-      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk);
+      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk) +
+      (+sel.tos > 0 ? ' · 其中超时 ' + sel.to + ' 次 ' + fmtDur(+sel.tos) +
+        '（占工具 ' + (sel.tos / (t || 1) * 100).toFixed(0) + '%）' : '');
   }
   function applyCmpSel(box) {
     const ro = $('#gcReadout');
@@ -3639,7 +3654,7 @@
     const val = (bar, key) => {
       const c = bar.cells.get(key);
       if (!c || !c.n) return null;
-      return { g: c.g / c.n, t: c.t / c.n, w: c.w / c.n, n: c.n };
+      return { g: c.g / c.n, t: c.t / c.n, w: c.w / c.n, n: c.n, to: c.to / c.n, tos: c.tos / c.n };
     };
     const readout = '<div class="gc-readout" id="gcReadout">' + CMP_HINT + '</div>';
 
@@ -3664,7 +3679,8 @@
         const seg = (kind, sec, p, label) =>
           '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
           '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
-          '" data-n="' + v.n + '" data-pk="' + b.peak + '" style="height:' + p.toFixed(2) + '%" title="' +
+          '" data-n="' + v.n + '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
+          '" data-tos="' + v.tos.toFixed(1) + '" style="height:' + p.toFixed(2) + '%" title="' +
           esc(label) + ' ' + fmtNum(sec, 0) + 's · ' + p.toFixed(1) + '%">' +
           (p >= 22 ? '<span>' + Math.round(p) + '%</span>' : '') + '</div>';
         bh += '<div class="gsp-col">' +
@@ -3672,7 +3688,8 @@
           '<div class="gsp-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
           seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>' +
           '<div class="gsp-name">' + (b.isBase ? '<span class="b">基线</span> ' : '') +
-          esc(b.name) + '<br>' + (b.isBase ? '录制基线' : '并发峰 ' + b.peak) + ' · 回放 ' + v.n + '</div></div>';
+          esc(b.name) + '<br>' + (b.isBase ? '录制基线' : '并发峰 ' + b.peak) + ' · 回放 ' + v.n +
+          (v.to > 0.001 ? '<br><span class="to">' + esc(toNote(v, '')) + '</span>' : '') + '</div></div>';
       }
       box.innerHTML = '<div class="chart-legend">' +
         '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
@@ -3731,10 +3748,11 @@
           const seg = (kind, sec, p, label) =>
             '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
             '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
-            '" data-n="' + v.n + '" data-pk="' + b.peak + '" style="height:' + p.toFixed(2) + '%" title="' +
+            '" data-n="' + v.n + '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
+            '" data-tos="' + v.tos.toFixed(1) + '" style="height:' + p.toFixed(2) + '%" title="' +
             esc(r.label) + ' · ' + esc(b.name) + ' · ' + esc(label) + ' ' + fmtNum(sec, 0) + 's (' +
             p.toFixed(1) + '%) · 每回放合计 ' + fmtDur(tot) + ' · 回放 ' + v.n + ' · ' +
-            (b.isBase ? '基线(录制)' : '总并发 ' + b.peak) + '"></div>';
+            (b.isBase ? '基线(录制)' : '总并发 ' + b.peak) + esc(toNote(v)) + '"></div>';
           ghtml += '<div class="gc-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
             seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>';
         }
