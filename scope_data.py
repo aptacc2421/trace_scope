@@ -269,9 +269,10 @@ def load_run(run_dir: Path, with_spans: bool = True):
         if ep["id"] not in {e["id"] for e in episodes}:
             episodes.append(ep)
 
+    # 没有时间信息的 episode 无法排时间轴；全部缺失时整个 run 不可用
+    episodes = [e for e in episodes if e["start"] is not None]
     if not episodes:
         return None
-    episodes = [e for e in episodes if e["start"] is not None]
     episodes.sort(key=lambda e: e["start"])
     # 同一 (trace, task, sample) 的重跑（dispatcher 超发等）按数据命名约定加 __dN 区分
     seen = set()
@@ -390,26 +391,6 @@ def summary_of(payload) -> dict:
     return {"root": payload["root"], "lazy": True, "runs": runs}
 
 
-def run_spans_bytes(payload) -> dict:
-    """每 run 的 spans 预序列化字节（按需加载层数据源：{episode_id: [span...]}）。"""
-    return {
-        r["id"]: json.dumps({ep["id"]: ep["spans"] for ep in r["episodes"]},
-                            ensure_ascii=False).encode("utf-8")
-        for r in payload["runs"]
-    }
-
-
-def filter_spans(run_spans: dict, t0=None, t1=None, ep_ids=None) -> dict:
-    """取 span 子集：t0/t1（绝对 ms）按时间窗过滤，ep_ids 指定 episode，缺省=全量。"""
-    out = {}
-    for eid, spans in run_spans.items():
-        if ep_ids is not None and eid not in ep_ids:
-            continue
-        out[eid] = spans if t0 is None else \
-            [sp for sp in spans if sp["s"] <= t1 and sp["e"] >= t0]
-    return out
-
-
 # ── memlog（内存采样日志 / datalog）解析 ─────────────────────────────
 # 两种格式，都是 key=value 采样行：
 #   A. memlog / *.memlog   ts=YYYY-MM-DD HH:MM:SS cell=xxx avail_mb=... anon_mb=... （绝对日期）
@@ -472,126 +453,144 @@ def _memlog_ts_ms(s: str, cache: dict) -> int:
     return base + (int(s[11:13]) * 3600 + int(s[14:16]) * 60 + int(s[17:19])) * 1000
 
 
-def load_memlog(path_str: str, ref_ms=None) -> dict:
+def _iter_jsonl(f, dc):
+    """JSONL（measure/memlog.jsonl）：每行一条采样
+    {"ts", "mem", "vm", "cg", "psi", "derived", ...}，嵌套数值（含数字字符串）
+    拍平成 a.b.c 字段名。产出 (t_epoch_ms, vals)。"""
+    for line in f:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+            t = _memlog_ts_ms(str(d.get("ts", ""))[:19], dc)
+        except (ValueError, TypeError, KeyError):
+            continue
+        vals = dict(_flat_num(d))
+        if vals:
+            yield t, vals
+
+
+def _iter_kv(f, ref: float):
+    """key=value 采样行；时间戳 ts=YYYY-MM-DD HH:MM:SS 或行首 HH:MM:SS（按 ref 对齐日期）。产出 (t_epoch_ms, vals)。"""
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        t = None
+        m = _TS_RE.search(line)
+        if m:
+            t = int(datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+        else:
+            m2 = _TOD_RE.match(line)
+            if m2:
+                tod = int(m2.group(1)) * 3600 + int(m2.group(2)) * 60 + int(m2.group(3))
+                base = datetime.fromtimestamp(ref / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
+                t = int((base.timestamp() + tod) * 1000)
+                while t - ref > 43200000:
+                    t -= 86400000
+                while ref - t > 43200000:
+                    t += 86400000
+        if t is None:
+            continue
+        vals = {}
+        for k, v in _KV_RE.findall(line):
+            if k == "ts":
+                continue
+            try:
+                vals[k] = float(v)
+            except ValueError:
+                continue
+        if vals:
+            yield t, vals
+
+
+def load_memlog(path_str: str, ref_ms=None, max_points: int = 2400) -> dict:
     """解析 memlog 文件 → 各字段时间序列（t=epoch ms，只读）。
 
-    JSONL 大文件（几百 MB、上万采样点、上千字段）做两件降载：
-      1. 跳过 cg.* —— cgroup 路径逐行变化，字段数爆炸且前端默认全隐藏；
-      2. 时间桶降采样 —— 每字段最多约 2500 点（屏幕横向像素足够）。
-    两处都只影响采样密度与不可视字段，不改字段语义。
+    JSONL 大文件（几百 MB、上万采样点、上千字段）用时间窗聚合降采样：
+    每窗每字段保 min/max 两点（极值不丢），每字段点数 ≤ max_points。
+    cg.* 等字段照常解析（前端按分组自行勾选显隐，不在解析层丢弃）。
 
     ref_ms：仅时分秒格式（HH:MM:SS）时用于确定日期，取离 ref 最近的一天（跨零点 ±24h 择近）。
+    max_points：每字段点数上限（默认 2400），超出按时间窗口保 min/max 降采样；<=0 不降采样。
     """
     p = Path(path_str).expanduser().resolve()
     if not p.is_file():
         raise ValueError(f"文件不存在: {p}")
     ref = float(ref_ms) if ref_ms else datetime.now().timestamp() * 1000
+    with open(p, "rb") as fb:
+        n_lines = sum(buf.count(b"\n") for buf in iter(lambda: fb.read(1 << 20), b""))
+    # 时间窗行宽：每窗每字段保 min/max 两点 → 字段点数 ≤ max_points（极值不丢）；<=0 不降采样
+    wins = max(1, (max_points or 0) // 2) if max_points and max_points > 0 else max(1, n_lines)
+    rows_per_win = max(1, (n_lines + wins - 1) // wins)
     order: list[str] = []
     seen: set[str] = set()
-    series: dict[str, list] = {}
-    rng: dict[str, list] = {}
-    pts = 0
+    series: dict = {}
+    win: dict = {}   # 当前窗聚合 {k: [min_v, min_t, max_v, max_t]}
+    win_idx = -1
+    n = 0
+    t0 = t1 = None
 
-    # 先看首行判定格式（JSONL 的 memlog 首行以 { 开头）
-    with p.open(encoding="utf-8", errors="replace") as fh:
-        first = ""
-        for line in fh:
-            if line.strip():
-                first = line
-                break
-    is_jsonl = first.lstrip().startswith("{")
+    def flush():
+        for k, (mnv, mnt, mxv, mxt) in win.items():
+            s = series.setdefault(k, [])
+            if mnt == mxt and mnv == mxv:
+                s.append([mnt, mnv])
+            elif mnt <= mxt:
+                s.append([mnt, mnv])
+                s.append([mxt, mxv])
+            else:
+                s.append([mxt, mxv])
+                s.append([mnt, mnv])
+        win.clear()
 
-    if is_jsonl:
-        size = p.stat().st_size
-        avg_line = max(len(first), 1)
-        # 粗略估算行数 → 采样步长；目标是每字段约 2500 点，末尾按实际采样数微调
-        est = max(1, size // avg_line)
-        stride = max(1, est // 2500)
+    with open(p, encoding="utf-8", errors="replace") as f:
+        is_jsonl = f.readline().lstrip().startswith("{")
+        f.seek(0)
         dc: dict[str, int] = {}
-        idx = 0
-        with p.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                idx += 1
-                if stride > 1 and idx % stride:
+        it = _iter_jsonl(f, dc) if is_jsonl else _iter_kv(f, ref)
+        for i, (t, vals) in enumerate(it):
+            b = i // rows_per_win
+            if b != win_idx:
+                flush()
+                win_idx = b
+            for k, v in vals.items():
+                if k.startswith("cg.io."):
+                    # cg.io.<块设备>.* 按设备逐个展开（单文件可达数千字段、字段数爆炸且前端默认隐藏），整体丢弃；
+                    # 其余 cg.*（stat/events/cpu/psi 等稳定家族）照常保留
                     continue
-                line = line.strip()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    d = json.loads(line)
-                    t = _memlog_ts_ms(str(d.get("ts", ""))[:19], dc)
-                except (ValueError, TypeError, KeyError):
-                    continue
-                for k, v in _flat_num(d):
-                    if k.startswith("cg."):
-                        continue
-                    lst = series.get(k)
-                    if lst is None:
-                        series[k] = [[t, v]]
-                        order.append(k)
-                        seen.add(k)
-                        rng[k] = [v, v]
-                    else:
-                        lst.append([t, v])
-                        r = rng[k]
-                        if v < r[0]:
-                            r[0] = v
-                        elif v > r[1]:
-                            r[1] = v
-                    pts += 1
-        # 字段顺序：友好段优先（derived/psi/mem/vm/node），段内保持发现顺序
-        prio = {"derived": 0, "psi": 1, "mem": 3, "vm": 4, "node": 5}
-        order.sort(key=lambda k: prio.get(k.split(".")[0], 2))
-    else:
-        # 旧 key=value 文本格式（一般较小），保持全量逐行解析
-        with p.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                t = None
-                m = _TS_RE.search(line)
-                if m:
-                    t = int(datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S").timestamp() * 1000)
+                if k not in seen:
+                    seen.add(k)
+                    order.append(k)
+                cur = win.get(k)
+                if cur is None:
+                    win[k] = [v, t, v, t]
                 else:
-                    m2 = _TOD_RE.match(line)
-                    if m2:
-                        tod = int(m2.group(1)) * 3600 + int(m2.group(2)) * 60 + int(m2.group(3))
-                        base = datetime.fromtimestamp(ref / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
-                        t = int((base.timestamp() + tod) * 1000)
-                        while t - ref > 43200000:
-                            t -= 86400000
-                        while ref - t > 43200000:
-                            t += 86400000
-                if t is None:
-                    continue
-                for k, v in _KV_RE.findall(line):
-                    if k == "ts":
-                        continue
-                    try:
-                        n = float(v)
-                    except ValueError:
-                        continue
-                    lst = series.get(k)
-                    if lst is None:
-                        series[k] = [[t, n]]
-                        order.append(k)
-                        seen.add(k)
-                        rng[k] = [n, n]
-                    else:
-                        lst.append([t, n])
-                        r = rng[k]
-                        if n < r[0]:
-                            r[0] = n
-                        elif n > r[1]:
-                            r[1] = n
-                    pts += 1
-    if not series:
+                    if v < cur[0]:
+                        cur[0], cur[1] = v, t
+                    if v > cur[2]:
+                        cur[2], cur[3] = v, t
+            n += 1
+            if t0 is None or t < t0:
+                t0 = t
+            if t1 is None or t > t1:
+                t1 = t
+    flush()
+    if n == 0:
         raise ValueError("没有解析到数据点（需要 ts=日期时间 或 HH:MM:SS 开头的 key=value 行）")
-    t0 = min(v[0][0] for v in series.values())
-    t1 = max(v[-1][0] for v in series.values())
+    if is_jsonl:
+        # 字段顺序：友好段优先（derived/psi/cg/mem/vm/node），段内保持发现顺序
+        prio = {"derived": 0, "psi": 1, "cg": 2, "mem": 3, "vm": 4, "node": 5}
+        order.sort(key=lambda k: prio.get(k.split(".")[0], 6))
+    for k in order:
+        series[k].sort(key=lambda pt: pt[0])
+    rng = {}
+    for k in order:
+        vs = [v for _, v in series[k]]
+        rng[k] = [min(vs), max(vs)] if vs else [0.0, 0.0]
     return {
-        "path": str(p), "n": pts,
+        "path": str(p), "n": n,
         "t0": t0, "t1": t1,
         "fields": order, "series": series, "range": rng,
     }
