@@ -186,6 +186,11 @@ def build_episode(ep, with_spans=True, src=None):
     if failed is None:
         failed = sum(1 for st in steps if any(x != 0 for x in (st.get("exits") or [0])))
 
+    # 录制数据标记：trace-v3 是数据集生成时落盘的录制轨迹（带 source_run），
+    # 回放由 sandbox_workflow 写 trace-v2。对比视图靠它把「录制基线」与回放路分开。
+    schema = str(ep.get("schema") or "")
+    recorded = 1 if (schema.endswith("-v3") or ep.get("source_run")) else 0
+
     out = {
         "id": f"{trace}__t{task}__s{samp}",
         "seq": ep.get("seq"),
@@ -195,6 +200,7 @@ def build_episode(ep, with_spans=True, src=None):
         "wall": round(wall or 0.0, 3),
         "gen_s": round(gen_s or 0.0, 3), "tool_s": round(tool_s or 0.0, 3),
         "n_steps": len(steps), "failed": failed,
+        "rec": recorded,
         "stop": ep.get("stop_reason") or "",
         "reward": ep.get("reward"),
         # 预聚合（概要层下发，波形 spans 按需加载后这些统计不再依赖全量 span）

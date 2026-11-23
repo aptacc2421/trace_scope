@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 # 48MB 扫描产物，由 make_data.py 重新生成，不进版本库
 frontend/data.js
+
+# 本地联调留痕：无头浏览器临时配置目录、截图、控制台输出
+scratch/chrome-prof-*/
+scratch/*.png
+scratch/test_out.txt
+scratch/traj.json
+# 从 index.html 切出来做 node --check 的副本，不是独立脚本
+scratch/_check.js
