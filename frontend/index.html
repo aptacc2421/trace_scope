@@ -353,6 +353,59 @@
   .cmp-foot .blk span { color: var(--muted); font-size: 11px; }
   .cmp-foot .blk .acc { color: var(--accent); }
   .cmp-foot .blk .warn { color: var(--cursor); }
+
+  /* ── 对比图：按轨迹分块的归一化占比条（小倍数） ──
+     每条轨迹一张卡片；块内各 run 并排一条 100% 堆叠条（推理/工具/间隙），
+     同轨迹各 run 相邻便于对比占比，跨轨迹分块避免互相干扰 */
+  .cmp-chart { padding: 12px 14px; }
+  .chart-legend {
+    display: flex; gap: 16px; align-items: center; margin-bottom: 12px;
+    color: var(--muted); font-size: 11px; position: sticky; top: 0;
+    background: var(--bg); z-index: 3; padding: 6px 0;
+  }
+  .chart-legend i {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 5px; vertical-align: -1px;
+  }
+  .chart-legend i.g { background: var(--gen); }
+  .chart-legend i.t { background: var(--tool); }
+  .chart-legend i.x { background: #394152; }
+  .chart-legend .dimv { margin-left: auto; color: var(--dim); }
+  .chart-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 12px;
+  }
+  .traj-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .tc-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .tc-h b { font: 600 12px var(--mono); color: var(--text); }
+  .tc-h .dimv { font-size: 10px; color: var(--dim); margin-left: auto; }
+  .tc-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .tc-row[data-base="1"] .tc-nm { color: var(--accent); }
+  .tc-nm {
+    width: 158px; flex: none; font: 10px var(--mono); color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+  }
+  .tc-bar {
+    flex: 1; height: 18px; border-radius: 4px; overflow: hidden; display: flex;
+    background: var(--panel-2);
+  }
+  .tc-bar.empty {
+    display: block; font: 10px/18px var(--sans); color: var(--dim); text-align: center;
+  }
+  .tc-bar i { display: block; height: 100%; font-style: normal; position: relative; }
+  .tc-bar i.g { background: var(--gen); }
+  .tc-bar i.t { background: var(--tool); }
+  .tc-bar i.x { background: #394152; }
+  .tc-bar i.x.warn { background: var(--cursor); }
+  .tc-bar i span {
+    position: absolute; inset: 0; font: 9px/18px var(--mono); color: #fff;
+    text-align: center; text-shadow: 0 1px 2px #0008;
+  }
+  .tc-val {
+    width: 58px; flex: none; font: 10px var(--mono); color: var(--muted); text-align: right;
+  }
 </style>
 </head>
 <body>
@@ -437,11 +490,16 @@
     <select id="cmpBase"></select>
     <input id="cmpSearch" placeholder="搜索 issue / 轨迹 …">
     <label class="cmp-chk"><input type="checkbox" id="cmpFirst"> 同键只取首次</label>
+    <div class="seg" id="cmpViewSeg" title="图=每轨迹一块、块内各 run 归一化占比条（同轨迹邻接）；表=per-traj 宽表">
+      <button data-cv="chart">分块图</button>
+      <button data-cv="table">宽表</button>
+    </div>
     <button class="btn" id="cmpMdBtn">导出 md</button>
     <button class="btn" id="cmpCsvBtn">导出 CSV</button>
     <span class="cmp-lbl" id="cmpHint"></span>
   </div>
   <div class="cmp-scroll">
+    <div class="cmp-chart" id="cmpChart"></div>
     <table class="cmp" id="cmpTable"></table>
   </div>
   <div class="cmp-foot" id="cmpFoot"></div>
@@ -650,6 +708,7 @@
   const state = {
     mode: 'rel',
     screen: 'scope',     // 顶层视图：scope=示波（波形）| compare=对比（宽表）
+    cmpView: 'chart',    // 对比内视图：chart=分块图（每轨迹一块归一化占比条）| table=per-traj 宽表
     cmpBase: null,       // 对比基线列（lane idx）；null=第一列
     sort: 'group',
     spanFilter: 'all',
@@ -2302,6 +2361,12 @@
     if (!e.target.closest('.mark-wrap')) $('#markPop').style.display = 'none';
   });
   $('#cmpBase').addEventListener('change', () => { state.cmpBase = +$('#cmpBase').value; renderCmp(); });
+  $('#cmpViewSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-cv]');
+    if (!b) return;
+    state.cmpView = b.dataset.cv;
+    renderCmp();
+  });
   $('#cmpSearch').addEventListener('input', () => renderCmp());
   $('#cmpFirst').addEventListener('change', () => renderCmp());
   $('#cmpMdBtn').addEventListener('click', exportCmpMd);
@@ -3405,10 +3470,66 @@
   const fmtNum = (v, d) => (v == null || !isFinite(v)) ? '-' :
     (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : Number(v).toFixed(d == null ? 2 : d));
 
+  /* 分块图：每条轨迹一张卡片，块内各 run 并排一条 100% 归一化堆叠条。
+     归一化口径 = 单轨迹（同一行的 (issue,samp) 键）内 gen/tool/间隙 各占 wall 的百分比；
+     同轨迹不同 run 邻接放在同一块内，不同轨迹各占一块（小倍数布局，借鉴论文 Fig 2b 分解 + Fig 4 分块）。
+     间隙 = wall − gen − tool（调度/未归类）；间隙占比 >5% 标橙（论文的未归类偏差警戒线）。 */
+  function renderCmpChart(vis, cols, baseCi) {
+    const box = $('#cmpChart');
+    if (!vis.length) {
+      box.innerHTML = '<div class="empty">无匹配轨迹</div>';
+      return;
+    }
+    let h = '<div class="chart-legend">' +
+      '<span><i class="g"></i>推理 gen</span>' +
+      '<span><i class="t"></i>工具 tool</span>' +
+      '<span><i class="x"></i>间隙 wall−gen−tool</span>' +
+      '<span class="dimv">每条 = 该 run 下此轨迹的耗时占比（归一化到 100%）；右端 = Σwall · 块内同轨迹各 run 并排</span>' +
+      '</div><div class="chart-grid">';
+    for (const r of vis) {
+      h += '<div class="traj-card"><div class="tc-h"><b>' + esc(r.label) + '</b>' +
+        '<span class="dimv">' + esc(r.trace) + ' · ' + cols.length + ' run</span></div>';
+      cols.forEach((c, ci) => {
+        const v = r.cols[ci];
+        if (!v) {
+          h += '<div class="tc-row"><span class="tc-nm">' + esc(c.name) +
+            '</span><div class="tc-bar empty">无数据</div><span class="tc-val">-</span></div>';
+          return;
+        }
+        const gap = Math.max(0, (v.wall || 0) - (v.gen || 0) - (v.tool || 0));
+        const tot = (v.wall || 0) > 0 ? v.wall : ((v.gen || 0) + (v.tool || 0) + gap) || 1;
+        const pG = (v.gen || 0) / tot * 100, pT = (v.tool || 0) / tot * 100, pX = gap / tot * 100;
+        const seg = (cls, p, label, sec) => {
+          const txt = p >= 12 ? '<span>' + Math.round(p) + '%</span>' : '';
+          return '<i class="' + cls + '" style="width:' + p.toFixed(2) + '%" title="' +
+            esc(label) + ' ' + fmtNum(sec, 0) + 's · ' + p.toFixed(1) + '%">' + txt + '</i>';
+        };
+        const tip = esc(c.name) + ' · 推理 ' + fmtNum(v.gen, 0) + 's (' + pG.toFixed(1) + '%) · 工具 ' +
+          fmtNum(v.tool, 0) + 's (' + pT.toFixed(1) + '%) · 间隙 ' + fmtNum(gap, 0) + 's (' + pX.toFixed(1) + '%)' +
+          (v.to ? ' · 超时调用 t' + v.to : '');
+        h += '<div class="tc-row" title="' + tip + '"' + (ci === baseCi ? ' data-base="1"' : '') + '>' +
+          '<span class="tc-nm">' + esc(c.name) + (ci === baseCi ? ' ·基线' : '') + '</span>' +
+          '<div class="tc-bar">' +
+          seg('g', pG, '推理', v.gen || 0) +
+          seg('t', pT, '工具', v.tool || 0) +
+          seg('x' + (pX > 5 ? ' warn' : ''), pX, '间隙', gap) +
+          '</div><span class="tc-val">' + fmtDur(v.wall) + '</span></div>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+    box.innerHTML = h;
+  }
+
   function renderCmp() {
     const cols = cmpLaneCols();
+    $('#cmpViewSeg').querySelectorAll('button').forEach(b =>
+      b.classList.toggle('on', b.dataset.cv === state.cmpView));
+    $('#cmpChart').style.display = state.cmpView === 'chart' ? '' : 'none';
+    $('#cmpTable').style.display = state.cmpView === 'table' ? '' : 'none';
     if (!cols.length) {
       $('#cmpCols').innerHTML = ''; $('#cmpBase').innerHTML = '';
+      $('#cmpChart').innerHTML = '';
       $('#cmpTable').innerHTML = '<tr><td class="key">未加载数据 —— 回「示波」打开数据（可多路），或点「＋ 添加一路」再回来</td></tr>';
       $('#cmpFoot').innerHTML = ''; $('#cmpHint').textContent = '';
       return;
@@ -3427,6 +3548,9 @@
     const q = ($('#cmpSearch').value || '').toLowerCase();
     const vis = rows.filter(r => !q || r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
       .sort((a, b) => a.label.localeCompare(b.label));
+    if (state.cmpView === 'chart') {
+      renderCmpChart(vis, cols, baseCi);
+    } else {
     let html = '<tr><th class="key">轨迹 (issue/sample)</th>' + cols.map((c, ci) =>
       '<th class="gsep" colspan="' + (ci === baseCi ? 3 : 4) + '">' + esc(c.name) + (ci === baseCi ? ' · 基线' : '') + '</th>').join('') + '</tr>' +
       '<tr><th class="key"></th>' + cols.map((c, ci) =>
@@ -3449,6 +3573,7 @@
       html += '</tr>';
     }
     $('#cmpTable').innerHTML = html || '<tr><td class="key">无匹配轨迹</td></tr>';
+    }
     $('#cmpHint').textContent = vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' + cols[baseCi].name + ') · ≥299s 超时剔除';
     const foot = cols.map((c, ci) => {
       const m = colMetrics(c.eps);
@@ -3669,7 +3794,7 @@
   }
 
   // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
-  window.scopeDebug = { state, draw, renderAll, renderCmp, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
+  window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
 
   boot();
 })();
