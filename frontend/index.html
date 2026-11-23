@@ -3834,7 +3834,6 @@
     if (state.cmpView === 'chart') {
       state.cmpSplitN = vis.length;
       if (state.cmpSplitIdx >= vis.length) state.cmpSplitIdx = 0;
-      $('#cmpHint').textContent = '构建 ' + BUILD;
       renderCmpChart(vis, cols, baseCi);
     } else {
     let html = '<tr><th class="key">轨迹 (issue/sample)</th>' + cols.map((c, ci) =>
@@ -3860,7 +3859,11 @@
     }
     $('#cmpTable').innerHTML = html || '<tr><td class="key">无匹配轨迹</td></tr>';
     }
-    $('#cmpHint').textContent = vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' + cols[baseCi].name + ') · ≥299s 超时剔除';
+    // 构建标记挂在两种视图都会写到的那一行上：换版本后一眼确认页面跑的是哪一版
+    $('#cmpHint').textContent = state.cmpView === 'chart'
+      ? '构建 ' + BUILD + ' · 红段 = 命令卡满超时上限'
+      : vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' +
+        cols[baseCi].name + ') · ≥299s 超时剔除 · 构建 ' + BUILD;
     const foot = cols.map((c, ci) => {
       const m = colMetrics(c.eps);
       const bm = ci === baseCi ? m : colMetrics(cols[baseCi].eps);
