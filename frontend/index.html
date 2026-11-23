@@ -346,6 +346,7 @@
   table.cmp tr:hover td.key { background: #1a2030; }
   table.cmp td.mult { font-weight: 600; cursor: default; }
   table.cmp td.dimv { color: var(--dim); }
+  table.cmp td .tmo { color: var(--danger); }
   .cmp-foot {
     display: flex; gap: 24px; padding: 10px 14px; flex-wrap: wrap;
     border-top: 1px solid var(--border); background: var(--panel); flex: none;
@@ -371,6 +372,7 @@
   }
   .chart-legend i.g { background: var(--gen); }
   .chart-legend i.t { background: var(--tool); }
+  .chart-legend i.o { background: var(--danger); }
   .chart-legend .dimv { margin-left: auto; color: var(--dim); }
   .gchart { display: flex; gap: 8px; }
   .gc-yaxis {
@@ -399,6 +401,7 @@
   .gc-bar .sg { width: 100%; }
   .gc-bar .sg.g { background: var(--gen); }
   .gc-bar .sg.t { background: var(--tool); }
+  .gc-bar .sg.o { background: var(--danger); }
   .gc-bar .sg:hover { filter: brightness(1.18); }
   .gc-bar .sg.sel { outline: 2px solid var(--cursor); outline-offset: -2px; }
   .gc-bar .pl {
@@ -439,6 +442,7 @@
   .gsp-bar .sg { width: 100%; position: relative; }
   .gsp-bar .sg.g { background: var(--gen); }
   .gsp-bar .sg.t { background: var(--tool); }
+  .gsp-bar .sg.o { background: var(--danger); }
   .gsp-bar .sg:hover { filter: brightness(1.15); }
   .gsp-bar .sg span {
     position: absolute; left: 0; right: 0; text-align: center;
@@ -449,7 +453,7 @@
     word-break: break-all;
   }
   .gsp-name .b { color: var(--accent); }
-  .gsp-name .to { color: var(--cursor); }
+  .gsp-name .to { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -2409,16 +2413,17 @@
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.mark-wrap')) $('#markPop').style.display = 'none';
   });
-  $('#cmpBase').addEventListener('change', () => { state.cmpBase = +$('#cmpBase').value; renderCmp(); });
+  $('#cmpBase').addEventListener('change', () => { state.cmpBase = +$('#cmpBase').value; renderCmp(); saveSetup(); });
   $('#cmpViewSeg').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-cv]');
     if (!b) return;
     state.cmpView = b.dataset.cv;
     renderCmp();
+    saveSetup();
   });
   $('#cmpSearch').addEventListener('input', () => renderCmp());
-  $('#cmpFirst').addEventListener('change', () => renderCmp());
-  $('#cmpSplit').addEventListener('change', () => { state.cmpSplit = $('#cmpSplit').checked; renderCmp(); });
+  $('#cmpFirst').addEventListener('change', () => { renderCmp(); saveSetup(); });
+  $('#cmpSplit').addEventListener('change', () => { state.cmpSplit = $('#cmpSplit').checked; renderCmp(); saveSetup(); });
   $('#cmpChart').addEventListener('click', (e) => {
     const sg = e.target.closest('.sg');
     if (!sg) return;
@@ -3609,7 +3614,7 @@
 
   const PLOT_H = 320;
 
-  const CMP_HINT = '点击柱段（推理/工具）查看占比 · 纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发（同在跑 episode 峰值）升序';
+  const CMP_HINT = '点击柱段（推理/工具/超时）查看占比 · 纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发（同在跑 episode 峰值）升序 · 红段 = 命令卡满超时上限（固定等待，与配额无关）';
   /* 卡满超时上限的工具时间：固定等待，与沙箱配额无关，必须单独标出，
      否则比 mem/cpu 配额时看到的是 300s × 次数这个常数，而不是真实计算差异。 */
   function toNote(v, sep) {
@@ -3619,14 +3624,18 @@
   }
 
   function cmpSelText(sel) {
-    const g = +sel.g || 0, t = +sel.t || 0, tot = g + t || 1;
+    const g = +sel.g || 0, t = +sel.t || 0;
+    const tmo = Math.min(t, Math.max(0, +sel.tos || 0)), tn = t - tmo;
+    const tot = g + t || 1;
+    const pc = (v) => (v / tot * 100).toFixed(1) + '%';
+    const nTo = +sel.to || 0;
     return (sel.row || '') + ' · ' + (sel.col || '') + ' · ' +
-      (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + (g / tot * 100).toFixed(1) + '%) · ' +
-      (sel.kind === 't' ? '▸' : '') + '工具 ' + fmtDur(t) + ' (' + (t / tot * 100).toFixed(1) + '%) · ' +
-      '每回放合计 ' + fmtDur(tot) + ' · 回放 ' + (sel.n || '1') + ' · ' +
-      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk) +
-      (+sel.tos > 0 ? ' · 其中超时 ' + sel.to + ' 次 ' + fmtDur(+sel.tos) +
-        '（占工具 ' + (sel.tos / (t || 1) * 100).toFixed(0) + '%）' : '');
+      (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + pc(g) + ') · ' +
+      (sel.kind === 't' ? '▸' : '') + '工具 ' + fmtDur(tn) + ' (' + pc(tn) + ')' +
+      (tmo > 0.5 ? ' · ' + (sel.kind === 'o' ? '▸' : '') + '超时 ' + fmtDur(tmo) + ' (' + pc(tmo) +
+        '，' + (nTo % 1 ? nTo.toFixed(1) : Math.round(nTo)) + ' 次卡满上限)' : '') +
+      ' · 每回放合计 ' + fmtDur(tot) + ' · 回放 ' + (sel.n || '1') + ' · ' +
+      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk);
   }
   function applyCmpSel(box) {
     const ro = $('#gcReadout');
@@ -3657,6 +3666,16 @@
       return { g: c.g / c.n, t: c.t / c.n, w: c.w / c.n, n: c.n, to: c.to / c.n, tos: c.tos / c.n };
     };
     const readout = '<div class="gc-readout" id="gcReadout">' + CMP_HINT + '</div>';
+    // 有卡满上限的命令超时就把红段加进图例（没有则不提，避免误读）
+    let hasTo = false;
+    for (const b of bars) {
+      for (const c of b.cells.values()) {
+        if (c.n && c.tos / c.n > 0.5) { hasTo = true; break; }
+      }
+      if (hasTo) break;
+    }
+    const legend = '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
+      (hasTo ? '<span><i class="o"></i>超时（命令卡满上限）</span>' : '');
 
     /* ── split view：逐条轨迹放大观察 ── */
     if (state.cmpSplit) {
@@ -3675,24 +3694,28 @@
         if (!v) continue;
         const tot = v.g + v.t || 1;
         const hPx = Math.max(2, (tot / top) * 240);
-        const pG = v.g / tot * 100, pT = v.t / tot * 100;
+        // 工具里卡满上限的那部分单独画成红段（与真实计算区分开）
+        const tmo = Math.min(v.t, Math.max(0, v.tos)), tn = v.t - tmo;
+        const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
+        const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
+          '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
+          '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
+          '" data-tos="' + v.tos.toFixed(1) + '"';
         const seg = (kind, sec, p, label) =>
-          '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
-          '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
-          '" data-n="' + v.n + '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
-          '" data-tos="' + v.tos.toFixed(1) + '" style="height:' + p.toFixed(2) + '%" title="' +
+          '<div class="sg ' + kind + '" data-k="' + kind + '"' + attrs +
+          ' style="height:' + p.toFixed(2) + '%" title="' +
           esc(label) + ' ' + fmtNum(sec, 0) + 's · ' + p.toFixed(1) + '%">' +
           (p >= 22 ? '<span>' + Math.round(p) + '%</span>' : '') + '</div>';
         bh += '<div class="gsp-col">' +
           '<div class="gsp-val">' + fmtDur(tot) + '</div>' +
           '<div class="gsp-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
-          seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>' +
+          seg('g', v.g, pG, '推理') + seg('t', tn, pT, '工具') +
+          (tmo > 0.5 ? seg('o', tmo, pO, '超时') : '') + '</div>' +
           '<div class="gsp-name">' + (b.isBase ? '<span class="b">基线</span> ' : '') +
           esc(b.name) + '<br>' + (b.isBase ? '录制基线' : '并发峰 ' + b.peak) + ' · 回放 ' + v.n +
-          (v.to > 0.001 ? '<br><span class="to">' + esc(toNote(v, '')) + '</span>' : '') + '</div></div>';
+          (tmo > 0.5 ? '<br><span class="to">' + esc(toNote(v, '')) + '</span>' : '') + '</div></div>';
       }
-      box.innerHTML = '<div class="chart-legend">' +
-        '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
+      box.innerHTML = '<div class="chart-legend">' + legend +
         '<span class="dimv">split view：逐条轨迹观察（← → 切换）</span></div>' +
         '<div class="gsp-wrap"><div class="gsp-nav">' +
         '<button class="btn" id="gspPrev">‹</button>' +
@@ -3744,25 +3767,28 @@
           }
           const tot = v.g + v.t || 1;
           const hPx = Math.max(2, (tot / top) * PLOT_H);
-          const pG = v.g / tot * 100, pT = v.t / tot * 100;
+          const tmo = Math.min(v.t, Math.max(0, v.tos)), tn = v.t - tmo;
+          const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
+          const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
+            '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
+            '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
+            '" data-tos="' + v.tos.toFixed(1) + '"';
           const seg = (kind, sec, p, label) =>
-            '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
-            '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
-            '" data-n="' + v.n + '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
-            '" data-tos="' + v.tos.toFixed(1) + '" style="height:' + p.toFixed(2) + '%" title="' +
+            '<div class="sg ' + kind + '" data-k="' + kind + '"' + attrs +
+            ' style="height:' + p.toFixed(2) + '%" title="' +
             esc(r.label) + ' · ' + esc(b.name) + ' · ' + esc(label) + ' ' + fmtNum(sec, 0) + 's (' +
             p.toFixed(1) + '%) · 每回放合计 ' + fmtDur(tot) + ' · 回放 ' + v.n + ' · ' +
             (b.isBase ? '基线(录制)' : '总并发 ' + b.peak) + esc(toNote(v)) + '"></div>';
           ghtml += '<div class="gc-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
-            seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>';
+            seg('g', v.g, pG, '推理') + seg('t', tn, pT, '工具') +
+            (tmo > 0.5 ? seg('o', tmo, pO, '超时') : '') + '</div>';
         }
         ghtml += '</div><div class="gc-tlbl">' + esc(r.label.split('/').pop()) + '</div></div>';
       }
       ghtml += '</div><div class="gc-ilbl" title="' + esc(g.issue) + '">' +
         esc(String(g.issue).replace(/^format-code-task-/, '')) + '</div></div>';
     }
-    box.innerHTML = '<div class="chart-legend">' +
-      '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
+    box.innerHTML = '<div class="chart-legend">' + legend +
       '<span class="dimv">纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发升序 · 点击柱段看占比</span></div>' +
       '<div class="gchart"><div class="gc-yaxis" style="height:' + PLOT_H + 'px">' + yax + '</div>' +
       '<div class="gc-scroll"><div class="gc-plot">' +
@@ -3817,7 +3843,7 @@
         html += '<td class="gsep">' + (v ? fmtNum(v.tool, 0) : '<span class="dimv">-</span>') + '</td>';
         html += '<td>' + (v ? fmtNum(v.calls, 0) : '<span class="dimv">-</span>') + '</td>';
         html += '<td>' + (v && v.mean != null ? fmtNum(v.mean, 2) : '<span class="dimv">-</span>') +
-          (v && v.to ? '<span class="dimv" title="' + v.to + ' 次 ≥299s 超时已剔除"> t' + v.to + '</span>' : '') + '</td>';
+          (v && v.to ? '<span class="tmo" title="' + v.to + ' 次 ≥299s 超时已剔除"> t' + v.to + '</span>' : '') + '</td>';
         if (ci === baseCi) return;
         const mult = (v && v.mean != null && bv && bv.mean > 0) ? v.mean / bv.mean : null;
         html += '<td class="mult" style="background:' + heatBg(mult) + '" title="' +
@@ -3932,6 +3958,7 @@
 
   /* ── 主渲染 / 启动 ──────────────────── */
   function renderAll() {
+    saveSetup();
     renderLaneHeaders();
     if (state.screen === 'compare') {
       document.querySelector('.main').style.display = 'none';
@@ -4008,6 +4035,81 @@
     requestAnimationFrame(drawMemCmp);
   }
 
+  /* ── 对比配置持久化 ─────────────────────
+     刷新后保留「加载了哪几路数据源、每路选的是哪个 run、基线是哪路、哪个视图」。
+     只存能重新解析出来的东西（目录路径 + run id + 全部run 标记），派生数字重新算，
+     目录被挪走/删掉时该路自动跳过，不至于整页空白。 */
+  const SETUP_KEY = 'trace_scope.setup';
+  let restoringSetup = false;
+
+  function saveSetup() {
+    if (restoringSetup) return;
+    try {
+      const lanes = state.lanes.map(l => (l.payload ? {
+        path: l.payload.root,
+        runId: l.runId,
+        allRuns: l.cmpRun === '*',
+      } : null));
+      if (!lanes.some(Boolean)) return;
+      localStorage.setItem(SETUP_KEY, JSON.stringify({
+        lanes,
+        activeLane: state.activeLane,
+        cmpBase: state.cmpBase,
+        cmpView: state.cmpView,
+        cmpSplit: state.cmpSplit,
+        firstOnly: $('#cmpFirst').checked,
+      }));
+    } catch (e) { /* 忽略 */ }
+  }
+
+  async function restoreSetup() {
+    let spec = null;
+    try { spec = JSON.parse(localStorage.getItem(SETUP_KEY) || 'null'); } catch (e) { return false; }
+    if (!spec || !Array.isArray(spec.lanes)) return false;
+    const want = spec.lanes.filter(s => s && s.path);
+    if (!want.length) return false;
+    restoringSetup = true;
+    let any = false;
+    try {
+      for (let i = 0; i < want.length; i++) {
+        const s = want[i];
+        let j = null;
+        try {
+          const res = await fetch('/api/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: s.path }),
+          });
+          j = await res.json();
+        } catch (e) { j = null; }
+        if (!j || j.error) continue;
+        const lane = i === 0 ? state.lanes[0] : addLane(null);
+        if (!applyPayload(lane, j)) {
+          if (i > 0) { lane.el.root.remove(); state.lanes.pop(); }
+          continue;
+        }
+        any = true;
+        if (s.runId && j.runs.some(r => r.id === s.runId)) {
+          lane.runId = s.runId;
+          lane.activeEp = null; lane.activeSpan = null;
+          selectAll(lane);
+        }
+        lane.cmpRun = s.allRuns ? '*' : null;
+      }
+    } finally {
+      restoringSetup = false;
+    }
+    if (!any) return false;
+    if (spec.cmpBase != null && state.lanes[+spec.cmpBase]) state.cmpBase = +spec.cmpBase;
+    state.cmpView = spec.cmpView === 'table' ? 'table' : 'chart';
+    state.cmpSplit = !!spec.cmpSplit;
+    if (typeof spec.firstOnly === 'boolean') $('#cmpFirst').checked = spec.firstOnly;
+    state.activeLane = Math.min(Math.max(0, +spec.activeLane || 0), state.lanes.length - 1);
+    fitView();
+    renderAll();
+    return true;
+  }
+
   async function boot() {
     addLane(null);
     renderHeader();
@@ -4019,6 +4121,9 @@
 
     if (serverMode) {
       renderHeader();
+      // 刷新后先恢复上次比对配置（多路数据源、各路 run、基线、视图）；
+      // preset 模式要按当前根目录重新铺开，跳过恢复
+      if (!new URLSearchParams(location.search).get('preset') && await restoreSetup()) return;
       try {
         const st = await (await fetch('/api/status')).json();
         // 服务端模式一律以实时解析为准（含 dN 重跑编号）；data.js 只是旧的离线快照，不在该模式下兜底
@@ -4048,7 +4153,7 @@
   }
 
   // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
-  window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, chartRunBars, cmpSelText, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
+  window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, chartRunBars, cmpSelText, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp, saveSetup, restoreSetup };
 
   boot();
 })();
