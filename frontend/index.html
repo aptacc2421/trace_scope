@@ -31,18 +31,20 @@
 
   /* ── 顶栏 ─────────────────────────────── */
   header {
-    display: flex; align-items: center; gap: 12px; padding: 0 14px;
-    height: 46px; background: var(--panel); border-bottom: 1px solid var(--border);
-    flex: none;
+    display: flex; align-items: center; gap: 10px; padding: 6px 14px;
+    min-height: 46px; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex: none; flex-wrap: wrap; row-gap: 6px;
   }
   .brand { font: 600 15px var(--mono); color: var(--accent); letter-spacing: .5px; }
   .brand small { color: var(--muted); font-weight: 400; margin-left: 8px; letter-spacing: 0; }
   .path {
     color: var(--dim); font: 11px var(--mono); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; max-width: 320px;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
   }
   .spacer { flex: 1; }
-  .seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: none; }
+  /* run 列表可能很长（每 run 一个按钮）：自身横向滚动，绝不挤压其它控件 */
+  #runSeg { max-width: 260px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
   .seg button {
     background: transparent; color: var(--muted); border: none; cursor: pointer;
     padding: 5px 11px; font: 12px var(--sans); white-space: nowrap;
@@ -52,14 +54,14 @@
   .btn {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 5px 11px; font: 12px var(--sans); cursor: pointer;
-    white-space: nowrap;
+    white-space: nowrap; flex: none;
   }
   .btn:hover { border-color: var(--accent); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn:disabled { opacity: .45; cursor: not-allowed; }
   select {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 8px; font: 12px var(--sans);
+    border-radius: 6px; padding: 5px 8px; font: 12px var(--sans); flex: none;
   }
 
   /* ── 摘要条 ───────────────────────────── */
