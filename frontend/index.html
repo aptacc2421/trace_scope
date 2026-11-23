@@ -354,14 +354,14 @@
   .cmp-foot .blk .acc { color: var(--accent); }
   .cmp-foot .blk .warn { color: var(--cursor); }
 
-  /* ── 对比图：按轨迹分块的归一化占比条（小倍数） ──
-     每条轨迹一张卡片；块内各 run 并排一条 100% 堆叠条（推理/工具/间隙），
-     同轨迹各 run 相邻便于对比占比，跨轨迹分块避免互相干扰 */
-  .cmp-chart { padding: 12px 14px; }
+  /* ── 对比图：分组堆叠柱（绝对时间，同轨迹各 run 并排） ──
+     纵轴 = 可比较时间（每回放均值：Σ ÷ 回放次数）；柱内堆叠 推理(gen)/工具(tool)。
+     横轴按 issue → 轨迹(样本) 分组；同轨迹内：基线(录制)最左，其余 run 按总并发
+     （同在跑 episode 数峰值）从小到大从左到右。点击柱段显示占比。 */
+  .cmp-chart { padding: 12px 14px 4px; display: flex; flex-direction: column; }
   .chart-legend {
-    display: flex; gap: 16px; align-items: center; margin-bottom: 12px;
-    color: var(--muted); font-size: 11px; position: sticky; top: 0;
-    background: var(--bg); z-index: 3; padding: 6px 0;
+    display: flex; gap: 16px; align-items: center; margin-bottom: 10px;
+    color: var(--muted); font-size: 11px; flex-wrap: wrap;
   }
   .chart-legend i {
     display: inline-block; width: 10px; height: 10px; border-radius: 2px;
@@ -369,43 +369,84 @@
   }
   .chart-legend i.g { background: var(--gen); }
   .chart-legend i.t { background: var(--tool); }
-  .chart-legend i.x { background: #394152; }
   .chart-legend .dimv { margin-left: auto; color: var(--dim); }
-  .chart-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 12px;
+  .gchart { display: flex; gap: 8px; }
+  .gc-yaxis {
+    width: 56px; flex: none; position: relative;
   }
-  .traj-card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 12px;
+  .gc-yaxis span {
+    position: absolute; right: 6px; transform: translateY(50%);
+    font: 10px var(--mono); color: var(--dim); white-space: nowrap;
   }
-  .tc-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
-  .tc-h b { font: 600 12px var(--mono); color: var(--text); }
-  .tc-h .dimv { font-size: 10px; color: var(--dim); margin-left: auto; }
-  .tc-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-  .tc-row[data-base="1"] .tc-nm { color: var(--accent); }
-  .tc-nm {
-    width: 158px; flex: none; font: 10px var(--mono); color: var(--muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+  .gc-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+  .gc-plot { position: relative; min-width: max-content; }
+  .gc-grid { position: absolute; inset: 0; pointer-events: none; }
+  .gc-grid .gl { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--border-soft); }
+  .gc-grid .gl.base { border-top: 1px solid var(--border); }
+  .gc-groups { display: flex; gap: 26px; align-items: flex-end; padding: 0 6px; }
+  .gc-issue { display: flex; flex-direction: column; }
+  .gc-trajs { display: flex; gap: 12px; align-items: flex-end; }
+  .gc-traj { display: flex; flex-direction: column; }
+  .gc-bars { display: flex; gap: 3px; align-items: flex-end; }
+  .gc-bar {
+    width: 14px; display: flex; flex-direction: column-reverse;
+    border-radius: 3px 3px 0 0; overflow: hidden; background: var(--panel-2);
+    cursor: pointer;
   }
-  .tc-bar {
-    flex: 1; height: 18px; border-radius: 4px; overflow: hidden; display: flex;
-    background: var(--panel-2);
+  .gc-bar.base { outline: 1px solid var(--accent); outline-offset: 1px; }
+  .gc-bar .sg { width: 100%; }
+  .gc-bar .sg.g { background: var(--gen); }
+  .gc-bar .sg.t { background: var(--tool); }
+  .gc-bar .sg:hover { filter: brightness(1.18); }
+  .gc-bar .sg.sel { outline: 2px solid var(--cursor); outline-offset: -2px; }
+  .gc-bar .pl {
+    width: 100%; height: 100%; border: 1px dashed var(--border); border-radius: 3px;
+    background: repeating-linear-gradient(45deg, transparent, transparent 3px, var(--border-soft) 3px, var(--border-soft) 4px);
   }
-  .tc-bar.empty {
-    display: block; font: 10px/18px var(--sans); color: var(--dim); text-align: center;
+  .gc-tlbl {
+    margin-top: 5px; font: 9px var(--mono); color: var(--dim);
+    text-align: center; overflow: hidden; white-space: nowrap;
   }
-  .tc-bar i { display: block; height: 100%; font-style: normal; position: relative; }
-  .tc-bar i.g { background: var(--gen); }
-  .tc-bar i.t { background: var(--tool); }
-  .tc-bar i.x { background: #394152; }
-  .tc-bar i.x.warn { background: var(--cursor); }
-  .tc-bar i span {
-    position: absolute; inset: 0; font: 9px/18px var(--mono); color: #fff;
-    text-align: center; text-shadow: 0 1px 2px #0008;
+  .gc-ilbl {
+    margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--border);
+    font: 10px var(--mono); color: var(--muted); text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .tc-val {
-    width: 58px; flex: none; font: 10px var(--mono); color: var(--muted); text-align: right;
+  .gc-readout {
+    min-height: 30px; margin-top: 8px; padding: 6px 10px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    font: 11px var(--mono); color: var(--muted);
   }
+  .gc-readout b { color: var(--text); }
+  .gc-readout .acc { color: var(--accent); }
+
+  /* split view：逐条轨迹放大观察 */
+  .gsp-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .gsp-nav { display: flex; gap: 8px; align-items: center; }
+  .gsp-nav .ttl { font: 600 13px var(--mono); color: var(--text); }
+  .gsp-body { display: flex; gap: 10px; }
+  .gsp-bars { display: flex; gap: 34px; align-items: flex-end; padding: 26px 10px 0; }
+  .gsp-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .gsp-val { font: 600 11px var(--mono); color: var(--text); white-space: nowrap; }
+  .gsp-bar {
+    width: 58px; display: flex; flex-direction: column-reverse;
+    border-radius: 4px 4px 0 0; overflow: hidden; background: var(--panel-2);
+    cursor: pointer; position: relative;
+  }
+  .gsp-bar.base { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+  .gsp-bar .sg { width: 100%; position: relative; }
+  .gsp-bar .sg.g { background: var(--gen); }
+  .gsp-bar .sg.t { background: var(--tool); }
+  .gsp-bar .sg:hover { filter: brightness(1.15); }
+  .gsp-bar .sg span {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font: 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #0009;
+  }
+  .gsp-name {
+    max-width: 120px; font: 9px var(--mono); color: var(--muted); text-align: center;
+    word-break: break-all;
+  }
+  .gsp-name .b { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -490,10 +531,11 @@
     <select id="cmpBase"></select>
     <input id="cmpSearch" placeholder="搜索 issue / 轨迹 …">
     <label class="cmp-chk"><input type="checkbox" id="cmpFirst"> 同键只取首次</label>
-    <div class="seg" id="cmpViewSeg" title="图=每轨迹一块、块内各 run 归一化占比条（同轨迹邻接）；表=per-traj 宽表">
-      <button data-cv="chart">分块图</button>
+    <div class="seg" id="cmpViewSeg" title="图=分组堆叠柱（纵轴绝对时间，同轨迹各 run 并排，基线最左，run 按总并发升序）；表=per-traj 宽表">
+      <button data-cv="chart">分组图</button>
       <button data-cv="table">宽表</button>
     </div>
+    <label class="cmp-chk" id="cmpSplitLbl" title="逐条轨迹放大观察（左右方向键切换）"><input type="checkbox" id="cmpSplit"> split view</label>
     <button class="btn" id="cmpMdBtn">导出 md</button>
     <button class="btn" id="cmpCsvBtn">导出 CSV</button>
     <span class="cmp-lbl" id="cmpHint"></span>
@@ -708,7 +750,11 @@
   const state = {
     mode: 'rel',
     screen: 'scope',     // 顶层视图：scope=示波（波形）| compare=对比（宽表）
-    cmpView: 'chart',    // 对比内视图：chart=分块图（每轨迹一块归一化占比条）| table=per-traj 宽表
+    cmpView: 'chart',    // 对比内视图：chart=分组堆叠柱（绝对时间）| table=per-traj 宽表
+    cmpSplit: false,     // split view：逐条轨迹放大观察
+    cmpSplitIdx: 0,      // split view 当前轨迹下标（vis 序）
+    cmpSplitN: 0,        // split view 轨迹总数（← → 翻页用）
+    cmpSel: null,        // 选中的柱段 {row, col, kind, g, t, n, pk}（读数用）
     cmpBase: null,       // 对比基线列（lane idx）；null=第一列
     sort: 'group',
     spanFilter: 'all',
@@ -2369,6 +2415,18 @@
   });
   $('#cmpSearch').addEventListener('input', () => renderCmp());
   $('#cmpFirst').addEventListener('change', () => renderCmp());
+  $('#cmpSplit').addEventListener('change', () => { state.cmpSplit = $('#cmpSplit').checked; renderCmp(); });
+  $('#cmpChart').addEventListener('click', (e) => {
+    const sg = e.target.closest('.sg');
+    if (!sg) return;
+    const d = sg.dataset;
+    state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk };
+    const box = $('#cmpChart');
+    box.querySelectorAll('.sg').forEach(s => s.classList.remove('sel'));
+    sg.classList.add('sel');
+    const ro = $('#gcReadout');
+    if (ro) ro.textContent = cmpSelText(state.cmpSel);
+  });
   $('#cmpMdBtn').addEventListener('click', exportCmpMd);
   $('#cmpCsvBtn').addEventListener('click', exportCmpCsv);
   $('#cmpCols').addEventListener('change', (e) => {
@@ -2387,6 +2445,15 @@
   });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && clearMark()) { renderHeader(); drawAll(); updateAllReadouts(state.cursorT); }
+    // split view：← → 逐条翻轨迹（输入框内不抢方向键）
+    if (state.screen === 'compare' && state.cmpView === 'chart' && state.cmpSplit && state.cmpSplitN > 0 &&
+        (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const d = e.key === 'ArrowRight' ? 1 : -1;
+      state.cmpSplitIdx = ((state.cmpSplitIdx + d) % state.cmpSplitN + state.cmpSplitN) % state.cmpSplitN;
+      renderCmp();
+    }
   });
   $('#search').addEventListener('input', (e) => {
     state.search = e.target.value.trim().toLowerCase();
@@ -3449,6 +3516,7 @@
         if (!rowMap.has(k)) rowMap.set(k, {
           key: k,
           label: (list[0].issue || list[0].trace) + '/' + list[0].samp,
+          issue: list[0].issue || list[0].trace, samp: list[0].samp,
           trace: list[0].trace, cols: {},
         });
         rowMap.get(k).cols[ci] = { tool, calls, sc, nc, to, wall, gen, n, steps,
@@ -3470,55 +3538,215 @@
   const fmtNum = (v, d) => (v == null || !isFinite(v)) ? '-' :
     (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : Number(v).toFixed(d == null ? 2 : d));
 
-  /* 分块图：每条轨迹一张卡片，块内各 run 并排一条 100% 归一化堆叠条。
-     归一化口径 = 单轨迹（同一行的 (issue,samp) 键）内 gen/tool/间隙 各占 wall 的百分比；
-     同轨迹不同 run 邻接放在同一块内，不同轨迹各占一块（小倍数布局，借鉴论文 Fig 2b 分解 + Fig 4 分块）。
-     间隙 = wall − gen − tool（调度/未归类）；间隙占比 >5% 标橙（论文的未归类偏差警戒线）。 */
+  /* 对比图：分组堆叠柱（绝对时间轴，同轨迹各 run 并排）
+     纵轴 = 可比较时间：每回放均值（Σ 耗时 ÷ 回放次数，同一轨迹同 run 有多份回放记录时归一化）。
+     横轴分组：issue → 轨迹(issue,sample) → run；同轨迹内 基线(录制) 最左，其余 run 按
+     总并发（该 run 同在跑 episode 数峰值 peak.rec）从小到大从左到右。基线列全部 run 视作
+     同一基线（录制数据集整体）；非基线列 cmpRun='*' 时每 run 独立成柱。
+     柱内堆叠：推理 gen（下）/ 工具 tool（上）；点击柱段读数显示占比。 */
+  function chartRunBars(cols, baseCi) {
+    const firstOnly = $('#cmpFirst').checked;
+    const baseLaneIdx = cols[baseCi] ? cols[baseCi].idx : -1;
+    const mkCells = (eps) => {
+      const byKey = new Map();
+      for (const ep of eps) {
+        const k = famKey(ep);
+        const a = byKey.get(k) || [];
+        a.push(ep); byKey.set(k, a);
+      }
+      const cells = new Map();
+      for (const [k, list] of byKey) {
+        list.sort((x, y) => (x.start || 0) - (y.start || 0));
+        const use = firstOnly ? list.slice(0, 1) : list;
+        let g = 0, t = 0, w = 0;
+        for (const ep of use) { g += ep.gen_s || 0; t += ep.tool_s || 0; w += ep.wall || 0; }
+        cells.set(k, { g, t, w, n: use.length });
+      }
+      return cells;
+    };
+    const bars = [];
+    state.lanes.forEach((lane, li) => {
+      if (!lane.payload) return;
+      if (li === baseLaneIdx) {
+        // 基线 = 录制数据整体：该路合并成一柱（录制目录常按 issue 分 run 存放，合并后每轨迹一根基线柱）
+        const eps = lane.cmpRun === '*' ? lane.payload.runs.reduce((a, r) => a.concat(r.episodes), [])
+          : (lane.payload.runs.find(r => r.id === lane.runId) || { episodes: [] }).episodes;
+        bars.push({ li, runId: 'baseline', name: laneLetter(li) + '·基线(录制)',
+          peak: -1, isBase: true, cells: mkCells(eps) });
+        return;
+      }
+      // 非基线：「全部run」时每 run 独立成柱（同轨迹多 run 并排对比）
+      const rs = lane.cmpRun === '*' ? lane.payload.runs
+        : lane.payload.runs.filter(r => r.id === lane.runId);
+      for (const r of rs) {
+        bars.push({ li, runId: r.id, name: laneLetter(li) + '·' + r.id,
+          peak: (r.peak && r.peak.rec) || 0, isBase: false, cells: mkCells(r.episodes) });
+      }
+    });
+    // 同轨迹内：基线最左，其余 run 按总并发（同在跑 episode 峰值）从小到大
+    bars.sort((a, b) => (b.isBase - a.isBase) || (a.peak - b.peak) || a.runId.localeCompare(b.runId));
+    return bars;
+  }
+
+  function niceTicks(maxV, n) {
+    if (!(maxV > 0)) maxV = 1;
+    const raw = maxV / n;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+    const top = Math.ceil(maxV / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v);
+    return { top, ticks };
+  }
+
+  const PLOT_H = 320;
+
+  const CMP_HINT = '点击柱段（推理/工具）查看占比 · 纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发（同在跑 episode 峰值）升序';
+  function cmpSelText(sel) {
+    const g = +sel.g || 0, t = +sel.t || 0, tot = g + t || 1;
+    return (sel.row || '') + ' · ' + (sel.col || '') + ' · ' +
+      (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + (g / tot * 100).toFixed(1) + '%) · ' +
+      (sel.kind === 't' ? '▸' : '') + '工具 ' + fmtDur(t) + ' (' + (t / tot * 100).toFixed(1) + '%) · ' +
+      '每回放合计 ' + fmtDur(tot) + ' · 回放 ' + (sel.n || '1') + ' · ' +
+      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk);
+  }
+  function applyCmpSel(box) {
+    const ro = $('#gcReadout');
+    if (ro) ro.textContent = state.cmpSel ? cmpSelText(state.cmpSel) : CMP_HINT;
+    if (!state.cmpSel) return;
+    const s = state.cmpSel;
+    box.querySelectorAll('.sg').forEach(el => {
+      const d = el.dataset;
+      el.classList.toggle('sel', d.row === s.row && d.col === s.col && d.k === s.kind);
+    });
+  }
+
   function renderCmpChart(vis, cols, baseCi) {
     const box = $('#cmpChart');
     if (!vis.length) {
       box.innerHTML = '<div class="empty">无匹配轨迹</div>';
       return;
     }
-    let h = '<div class="chart-legend">' +
-      '<span><i class="g"></i>推理 gen</span>' +
-      '<span><i class="t"></i>工具 tool</span>' +
-      '<span><i class="x"></i>间隙 wall−gen−tool</span>' +
-      '<span class="dimv">每条 = 该 run 下此轨迹的耗时占比（归一化到 100%）；右端 = Σwall · 块内同轨迹各 run 并排</span>' +
-      '</div><div class="chart-grid">';
-    for (const r of vis) {
-      h += '<div class="traj-card"><div class="tc-h"><b>' + esc(r.label) + '</b>' +
-        '<span class="dimv">' + esc(r.trace) + ' · ' + cols.length + ' run</span></div>';
-      cols.forEach((c, ci) => {
-        const v = r.cols[ci];
-        if (!v) {
-          h += '<div class="tc-row"><span class="tc-nm">' + esc(c.name) +
-            '</span><div class="tc-bar empty">无数据</div><span class="tc-val">-</span></div>';
-          return;
-        }
-        const gap = Math.max(0, (v.wall || 0) - (v.gen || 0) - (v.tool || 0));
-        const tot = (v.wall || 0) > 0 ? v.wall : ((v.gen || 0) + (v.tool || 0) + gap) || 1;
-        const pG = (v.gen || 0) / tot * 100, pT = (v.tool || 0) / tot * 100, pX = gap / tot * 100;
-        const seg = (cls, p, label, sec) => {
-          const txt = p >= 12 ? '<span>' + Math.round(p) + '%</span>' : '';
-          return '<i class="' + cls + '" style="width:' + p.toFixed(2) + '%" title="' +
-            esc(label) + ' ' + fmtNum(sec, 0) + 's · ' + p.toFixed(1) + '%">' + txt + '</i>';
-        };
-        const tip = esc(c.name) + ' · 推理 ' + fmtNum(v.gen, 0) + 's (' + pG.toFixed(1) + '%) · 工具 ' +
-          fmtNum(v.tool, 0) + 's (' + pT.toFixed(1) + '%) · 间隙 ' + fmtNum(gap, 0) + 's (' + pX.toFixed(1) + '%)' +
-          (v.to ? ' · 超时调用 t' + v.to : '');
-        h += '<div class="tc-row" title="' + tip + '"' + (ci === baseCi ? ' data-base="1"' : '') + '>' +
-          '<span class="tc-nm">' + esc(c.name) + (ci === baseCi ? ' ·基线' : '') + '</span>' +
-          '<div class="tc-bar">' +
-          seg('g', pG, '推理', v.gen || 0) +
-          seg('t', pT, '工具', v.tool || 0) +
-          seg('x' + (pX > 5 ? ' warn' : ''), pX, '间隙', gap) +
-          '</div><span class="tc-val">' + fmtDur(v.wall) + '</span></div>';
-      });
-      h += '</div>';
+    const bars = chartRunBars(cols, baseCi);
+    const rows = vis.slice().sort((a, b) =>
+      String(a.issue || a.trace).localeCompare(String(b.issue || b.trace)) || (a.samp - b.samp));
+    // 每格每回放均值
+    const val = (bar, key) => {
+      const c = bar.cells.get(key);
+      if (!c || !c.n) return null;
+      return { g: c.g / c.n, t: c.t / c.n, w: c.w / c.n, n: c.n };
+    };
+    const readout = '<div class="gc-readout" id="gcReadout">' + CMP_HINT + '</div>';
+
+    /* ── split view：逐条轨迹放大观察 ── */
+    if (state.cmpSplit) {
+      const idx = Math.max(0, Math.min(state.cmpSplitIdx, rows.length - 1));
+      state.cmpSplitIdx = idx;
+      const r = rows[idx];
+      let yMax = 0;
+      for (const b of bars) {
+        const v = val(b, r.key);
+        if (v) yMax = Math.max(yMax, v.g + v.t);
+      }
+      const { top } = niceTicks(yMax || 1, 4);
+      let bh = '';
+      for (const b of bars) {
+        const v = val(b, r.key);
+        if (!v) continue;
+        const tot = v.g + v.t || 1;
+        const hPx = Math.max(2, (tot / top) * 240);
+        const pG = v.g / tot * 100, pT = v.t / tot * 100;
+        const seg = (kind, sec, p, label) =>
+          '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
+          '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
+          '" data-n="' + v.n + '" data-pk="' + b.peak + '" style="height:' + p.toFixed(2) + '%" title="' +
+          esc(label) + ' ' + fmtNum(sec, 0) + 's · ' + p.toFixed(1) + '%">' +
+          (p >= 22 ? '<span>' + Math.round(p) + '%</span>' : '') + '</div>';
+        bh += '<div class="gsp-col">' +
+          '<div class="gsp-val">' + fmtDur(tot) + '</div>' +
+          '<div class="gsp-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
+          seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>' +
+          '<div class="gsp-name">' + (b.isBase ? '<span class="b">基线</span> ' : '') +
+          esc(b.name) + '<br>' + (b.isBase ? '录制基线' : '并发峰 ' + b.peak) + ' · 回放 ' + v.n + '</div></div>';
+      }
+      box.innerHTML = '<div class="chart-legend">' +
+        '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
+        '<span class="dimv">split view：逐条轨迹观察（← → 切换）</span></div>' +
+        '<div class="gsp-wrap"><div class="gsp-nav">' +
+        '<button class="btn" id="gspPrev">‹</button>' +
+        '<button class="btn" id="gspNext">›</button>' +
+        '<span class="ttl">' + esc(r.label) + '</span>' +
+        '<span class="cmp-lbl">' + (idx + 1) + ' / ' + rows.length + ' 条轨迹</span></div>' +
+        '<div class="gsp-body"><div class="gsp-bars">' + (bh || '<div class="empty">该轨迹无数据</div>') + '</div></div></div>' +
+        readout;
+      applyCmpSel(box);
+      $('#gspPrev').addEventListener('click', () => { state.cmpSplitIdx = (idx - 1 + rows.length) % rows.length; renderCmp(); });
+      $('#gspNext').addEventListener('click', () => { state.cmpSplitIdx = (idx + 1) % rows.length; renderCmp(); });
+      return;
     }
-    h += '</div>';
-    box.innerHTML = h;
+
+    /* ── 总览：issue → 轨迹 → run 分组堆叠柱 ── */
+    let yMax = 0;
+    for (const r of rows) for (const b of bars) {
+      const v = val(b, r.key);
+      if (v) yMax = Math.max(yMax, v.g + v.t);
+    }
+    const { top, ticks } = niceTicks(yMax || 1, 5);
+    let grid = '';
+    for (const v of ticks) {
+      grid += '<div class="gl' + (v === 0 ? ' base' : '') + '" style="bottom:' +
+        (v / top * PLOT_H).toFixed(1) + 'px"></div>';
+    }
+    let yax = '';
+    for (const v of ticks) {
+      yax += '<span style="bottom:' + (v / top * PLOT_H).toFixed(1) + 'px">' + fmtDur(v) + '</span>';
+    }
+    // 按 issue 分组
+    const groups = [];
+    for (const r of rows) {
+      const key = r.issue || r.trace;
+      const g = groups[groups.length - 1];
+      if (g && g.issue === key) g.rows.push(r);
+      else groups.push({ issue: key, rows: [r] });
+    }
+    let ghtml = '';
+    for (const g of groups) {
+      ghtml += '<div class="gc-issue"><div class="gc-trajs">';
+      for (const r of g.rows) {
+        ghtml += '<div class="gc-traj"><div class="gc-bars" style="height:' + PLOT_H + 'px">';
+        for (const b of bars) {
+          const v = val(b, r.key);
+          if (!v) {
+            ghtml += '<div class="gc-bar" title="无数据"><div class="pl"></div></div>';
+            continue;
+          }
+          const tot = v.g + v.t || 1;
+          const hPx = Math.max(2, (tot / top) * PLOT_H);
+          const pG = v.g / tot * 100, pT = v.t / tot * 100;
+          const seg = (kind, sec, p, label) =>
+            '<div class="sg ' + kind + '" data-k="' + kind + '" data-row="' + esc(r.label) +
+            '" data-col="' + esc(b.name) + '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) +
+            '" data-n="' + v.n + '" data-pk="' + b.peak + '" style="height:' + p.toFixed(2) + '%" title="' +
+            esc(r.label) + ' · ' + esc(b.name) + ' · ' + esc(label) + ' ' + fmtNum(sec, 0) + 's (' +
+            p.toFixed(1) + '%) · 每回放合计 ' + fmtDur(tot) + ' · 回放 ' + v.n + ' · ' +
+            (b.isBase ? '基线(录制)' : '总并发 ' + b.peak) + '"></div>';
+          ghtml += '<div class="gc-bar' + (b.isBase ? ' base' : '') + '" style="height:' + hPx.toFixed(1) + 'px">' +
+            seg('g', v.g, pG, '推理') + seg('t', v.t, pT, '工具') + '</div>';
+        }
+        ghtml += '</div><div class="gc-tlbl">' + esc(r.label.split('/').pop()) + '</div></div>';
+      }
+      ghtml += '</div><div class="gc-ilbl" title="' + esc(g.issue) + '">' +
+        esc(String(g.issue).replace(/^format-code-task-/, '')) + '</div></div>';
+    }
+    box.innerHTML = '<div class="chart-legend">' +
+      '<span><i class="g"></i>推理 gen</span><span><i class="t"></i>工具 tool</span>' +
+      '<span class="dimv">纵轴 = 每回放均值（Σ ÷ 回放次数）· 基线(录制)最左 · run 按总并发升序 · 点击柱段看占比</span></div>' +
+      '<div class="gchart"><div class="gc-yaxis" style="height:' + PLOT_H + 'px">' + yax + '</div>' +
+      '<div class="gc-scroll"><div class="gc-plot">' +
+      '<div class="gc-grid" style="height:' + PLOT_H + 'px">' + grid + '</div>' +
+      '<div class="gc-groups">' + ghtml + '</div></div></div></div>' + readout;
+    applyCmpSel(box);
   }
 
   function renderCmp() {
@@ -3527,6 +3755,8 @@
       b.classList.toggle('on', b.dataset.cv === state.cmpView));
     $('#cmpChart').style.display = state.cmpView === 'chart' ? '' : 'none';
     $('#cmpTable').style.display = state.cmpView === 'table' ? '' : 'none';
+    $('#cmpSplitLbl').style.display = state.cmpView === 'chart' ? '' : 'none';
+    $('#cmpSplit').checked = state.cmpSplit;
     if (!cols.length) {
       $('#cmpCols').innerHTML = ''; $('#cmpBase').innerHTML = '';
       $('#cmpChart').innerHTML = '';
@@ -3549,6 +3779,8 @@
     const vis = rows.filter(r => !q || r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q))
       .sort((a, b) => a.label.localeCompare(b.label));
     if (state.cmpView === 'chart') {
+      state.cmpSplitN = vis.length;
+      if (state.cmpSplitIdx >= vis.length) state.cmpSplitIdx = 0;
       renderCmpChart(vis, cols, baseCi);
     } else {
     let html = '<tr><th class="key">轨迹 (issue/sample)</th>' + cols.map((c, ci) =>
@@ -3794,7 +4026,7 @@
   }
 
   // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
-  window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
+  window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, chartRunBars, cmpSelText, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp };
 
   boot();
 })();
