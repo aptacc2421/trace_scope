@@ -2395,6 +2395,13 @@
   async function loadMemlogFile(idx, path) {
     const lane = state.lanes[idx];
     if (!lane) return;
+    if (/\.gz$/i.test(path)) { setMemStatus('暂不支持 .gz，请先解压为 .jsonl 再选', true); return; }
+    // 解析中显示已用秒数（大文件首次解析可达数十秒），让用户看到进度而不是静止文字
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      setMemStatus('解析中 ' + path.split(/[\\\/]/).pop() + ' … 已用 '
+        + ((Date.now() - t0) / 1000).toFixed(1) + 's（大文件首次解析约需数十秒，之后秒开）');
+    }, 500);
     setMemStatus('解析 ' + path + ' …');
     try {
       let j = memCache.get(path);
@@ -2420,6 +2427,8 @@
       draw(lane);
     } catch (err) {
       setMemStatus('请求失败: ' + err, true);
+    } finally {
+      clearInterval(tick);
     }
   }
 
