@@ -753,6 +753,11 @@
 
   /* ── 状态：多路 lane，共用时间轴/游标 ── */
   let serverMode = false;
+  /* 构建标记：对比栏右上角显示，用来确认浏览器跑的是不是最新一版脚本
+     （离线快照/浏览器缓存都会导致改了看不到，有这行就不用猜） */
+  const BUILD = '11-23 22:05';
+  window.__build = BUILD;
+  document.documentElement.dataset.build = BUILD;
 
   const state = {
     mode: 'rel',
@@ -3829,6 +3834,7 @@
     if (state.cmpView === 'chart') {
       state.cmpSplitN = vis.length;
       if (state.cmpSplitIdx >= vis.length) state.cmpSplitIdx = 0;
+      $('#cmpHint').textContent = '构建 ' + BUILD;
       renderCmpChart(vis, cols, baseCi);
     } else {
     let html = '<tr><th class="key">轨迹 (issue/sample)</th>' + cols.map((c, ci) =>
