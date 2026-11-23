@@ -154,15 +154,16 @@
   #memMenu .mm-grp-row { margin-top: 4px; padding-top: 4px; }
   #memMenu .mm-f-row { padding-left: 18px; }
   #memBig .mm-grp { display: flex; flex-direction: column; }
-  #memBig, #memCmp {
+  #memBig, #memCmp, #memVm {
     position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
-    background: rgba(12, 15, 22, .96); padding: 12px; box-sizing: border-box;
+    background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
-  #memBig .mb-h, #memCmp .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  #memBig .mb-read, #memCmp .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; }
-  #memBig .mb-body, #memCmp .mb-body { flex: 1; min-height: 0; }
+  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; }
+  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body { flex: 1; min-height: 0; }
   #memCmp .mb-body { overflow-y: auto; }
-  #memBig .mb-fields, #memCmp .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memVm .mb-body { overflow-y: auto; }
+  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
   /* 对比界面字段面板：大组（数据段）→ 小组（二级段）→ 字段，三层缩进 */
   #memCmp .mb-fields { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; max-height: 196px; }
   #memCmp .mm-seg, #memCmp .mm-grp { display: flex; flex-direction: column; }
@@ -515,6 +516,7 @@
         <button data-type="tool">仅工具</button>
       </div>
       <button class="btn" id="memCmpBtn" title="跨路对比相同元数据：独立界面，横轴以各 run 开始时间为 t=0">元数据对比</button>
+      <button class="btn" id="memVmBtn" title="每沙箱明细（memlog 的 per_vm 段）：活跃沙箱数、单 VM 的 RSS/PSS/CPU/IO 曲线与生命周期">per-VM</button>
       <button class="btn" id="addLaneBtn" title="加入一路新的数据做对比">＋ 添加一路</button>
     </div>
     <div class="lanes" id="lanes"></div>
@@ -540,6 +542,9 @@
     <select id="cmpBase"></select>
     <input id="cmpSearch" placeholder="搜索 issue / 轨迹 …">
     <label class="cmp-chk"><input type="checkbox" id="cmpFirst"> 同键只取首次</label>
+    <label class="cmp-chk" id="cmpTokLbl" title="推理耗时按 token 重算：gen = 首 token 等待 + 完成 token ÷ 吞吐。录制轨迹是真推理实测（逐步记了 token 与 ttft），回放不起模型、直接 sleep 录制时的每步延迟，所以两路 gen 天生相同；换模型 / 换硬件比时才需要用这个口径重算"><input type="checkbox" id="cmpTok"> 推理按 token 重算</label>
+    <input id="cmpTps" type="number" min="1" max="4000" step="1" value="110" title="解码吞吐（token/s），开启「推理按 token 重算」后生效">
+    <span class="cmp-lbl">tok/s</span>
     <div class="seg" id="cmpViewSeg" title="图=分组堆叠柱（纵轴绝对时间，同轨迹各 run 并排，基线最左，run 按总并发升序）；表=per-traj 宽表">
       <button data-cv="chart">分组图</button>
       <button data-cv="table">宽表</button>
@@ -710,6 +715,13 @@
     if (Math.abs(v) >= 10000) return Math.round(v).toLocaleString('en-US');
     return String(Math.abs(v) >= 100 ? Math.round(v) : Number(v).toFixed(1));
   }
+  // token 数按万/百万缩写，避免读数行被七位数撑开
+  function fmtTok(n) {
+    n = +n || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e4) return (n / 1e3).toFixed(1) + 'k';
+    return String(Math.round(n));
+  }
   // memlog 字段单位：后缀 _mb/_gb 优先，其余按两种 datalog 格式的已知字段。
   // 单位就是合并显示的分组依据：同单位同刻度，不同单位分带
   function memUnit(f) {
@@ -772,6 +784,8 @@
     cmpSel: null,        // 选中的柱段 {row, col, kind, g, t, n, pk}（读数用）
     cmpBase: null,       // 对比基线列（lane idx）；null=自动（默认录制路，没有则第一列）
     cmpBaseUser: false,  // 用户是否手动选过基线；没选过就别让存下来的旧索引挡住「录制路优先」
+    cmpTok: false,       // 推理耗时按 token 重算（换模型/换硬件比时用；默认关）
+    cmpTps: 110,         // 重算用的解码吞吐（token/s）
     sort: 'group',
     spanFilter: 'all',
     search: '',
@@ -811,6 +825,9 @@
     return lane._recShare;
   };
   const isRecLane = (lane) => laneRecShare(lane) >= 0.5;
+  // 数据集自带的轨迹目录（自动发现来当基线的那一路）：只有它有资格叫「录制」。
+  // 自己跑出来的 run 也可能是 trace-v3，但那只是被比较的一方。
+  const isDatasetLane = (lane) => !!(lane && (lane.autoBase || lane.cmpOnly) && isRecLane(lane));
   const selectedEps = (lane) => {
     const r = run(lane);
     return r ? r.episodes.filter(e => lane.selected.has(e.id)) : [];
@@ -1058,7 +1075,7 @@
     });
     el.querySelector('.lane-mem-x').addEventListener('click', (e) => {
       e.stopPropagation();
-      lane.mem = null;
+      lane.mem = null; lane.vmCache = null; lane.vmErr = '';
       applyMemLayout(lane);
       renderLaneHeaders();
       draw(lane);
@@ -2452,12 +2469,22 @@
   });
   $('#cmpSearch').addEventListener('input', () => renderCmp());
   $('#cmpFirst').addEventListener('change', () => { renderCmp(); saveSetup(); });
+  const tokTpsEl = $('#cmpTps');
+  const syncTokTps = () => {
+    state.cmpTok = $('#cmpTok').checked;
+    state.cmpTps = Math.max(1, Math.min(4000, +tokTpsEl.value || 110));
+    tokTpsEl.disabled = !state.cmpTok;
+    renderCmp(); saveSetup();
+  };
+  if ($('#cmpTok')) $('#cmpTok').addEventListener('change', syncTokTps);
+  if (tokTpsEl) tokTpsEl.addEventListener('change', syncTokTps);
   $('#cmpSplit').addEventListener('change', () => { state.cmpSplit = $('#cmpSplit').checked; renderCmp(); saveSetup(); });
   $('#cmpChart').addEventListener('click', (e) => {
     const sg = e.target.closest('.sg');
     if (!sg) return;
     const d = sg.dataset;
-    state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk, to: d.to, tos: d.tos };
+    state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk, to: d.to, tos: d.tos,
+      ct: d.ct, tps: d.tps, graw: d.graw };
     const box = $('#cmpChart');
     box.querySelectorAll('.sg').forEach(s => s.classList.remove('sel'));
     sg.classList.add('sel');
@@ -2728,6 +2755,8 @@
         memCache.set(path, j);
       }
       lane.mem = j;
+      // 换了 memlog 文件，per-VM 明细必须跟着作废，否则面板还画着上一份文件的沙箱
+      lane.vmCache = null; lane.vmErr = '';
       // 恢复该文件的显示偏好（勾选隐藏 / split view）；无保存记录时按默认规则只显示重要字段
       const pf = memPrefsOf(path);
       lane.memHide = pf.hide == null
@@ -2751,7 +2780,7 @@
   $('#memClearBtn').addEventListener('click', () => {
     const lane = state.lanes[targetMemLane];
     if (lane) {
-      lane.mem = null;
+      lane.mem = null; lane.vmCache = null; lane.vmErr = '';
       applyMemLayout(lane);
       renderLaneHeaders();
       draw(lane);
@@ -2850,7 +2879,7 @@
       if (act === 'change') { const idx = memMenuLane; closeMemMenu(); openMemModal(idx); return; }
       if (act === 'big') { const idx = memMenuLane; closeMemMenu(); openMemBig(idx); return; }
       if (act === 'clear') {
-        lane.mem = null; lane.memHide = new Set(); lane.memSplit = false;
+        lane.mem = null; lane.vmCache = null; lane.vmErr = ''; lane.memHide = new Set(); lane.memSplit = false;
         applyMemLayout(lane); renderLaneHeaders(); draw(lane); closeMemMenu(); return;
       }
       if (act === 'all') lane.memHide = new Set();
@@ -2908,6 +2937,8 @@
     if (!lane || !lane.mem) return;
     memBigLane = idx;
     memBigEl.style.display = 'flex';
+    memCmpEl.style.display = 'none';
+    memVmEl.style.display = 'none';
     memBigEl.querySelector('#mbName').textContent = lane.mem.path.split(/[\\\/]/).pop();
     renderMemBigFields();
     requestAnimationFrame(drawMemBig);
@@ -3169,13 +3200,15 @@
   };
   // 并发占用序列（记录条数口径）：episode 的预聚合 iv → 事件流 → 按时间采样为 [relMs, count]
   // 只做一次扫描，点数按横轴像素上限收敛（每路 ~600 点足够）
-  const memCmpConc = (lane, durMax, samples) => {
+  // kind：'tool' = 沙箱内实际占用（tiv）；'all' = 该轨迹在跑（iv，含推理段）。
+  // 两条一起看才知道阶段：活跃高、工具为 0 = 正在推理；两条重合 = 在跑命令。
+  const memCmpConc = (lane, durMax, samples, kind) => {
     const r = run(lane);
     const eps = r ? r.episodes : [];
     const anch = memCmpAnchor(lane);
     const ev = [];
     for (const ep of eps) {
-      const iv = ep.tiv || [];   // 仅统计 tool 区间：沙箱内实际占用
+      const iv = (kind === 'all' ? ep.iv : ep.tiv) || [];
       let cs = null, ce = null;
       const flush = () => { if (cs != null) { ev.push([cs - anch, 1]); ev.push([ce - anch, -1]); } };
       for (const [s, e] of iv) {
@@ -3198,9 +3231,13 @@
   };
   // 图例/标识用 run 名，而不是 memlog 目录
   const memCmpLabel = (lane) => {
-    // 以 memlog 自己所在目录为准：一路里切换 run 时，已经加载的元数据还是原来那个文件的
-    const dir = memDirName(lane.mem.path).split(/[\\/]/).filter(Boolean).pop();
-    if (dir) return dir;
+    // 以 memlog 自己所在目录为准：一路里切换 run 时，已经加载的元数据还是原来那个文件的。
+    // 目录常叫 host/ 或 measure/（采集脚本的落盘位置），这种通用名往上再取一层才是 run 名
+    const parts = memDirName(lane.mem.path).split(/[\\/]/).filter(Boolean);
+    const generic = new Set(['host', 'measure', 'memlog', 'logs']);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (!generic.has(parts[i].toLowerCase())) return parts[i];
+    }
     const r = run(lane);
     return (r && r.id) ? r.id : lane.mem.path;
   };
@@ -3346,6 +3383,9 @@
       memCmpAuto = false;
     }
     memCmpEl.style.display = 'flex';
+    // 三个全屏弹层（单路明细 / 元数据对比 / per-VM）互斥：同时开着只会互相盖住
+    memVmEl.style.display = 'none';
+    memBigEl.style.display = 'none';
     memCmpEl.querySelector('#mcName').innerHTML = ls.map(({ l, i }, k) =>
       '<span style="color:' + MC_COLORS[k % MC_COLORS.length] + '" title="' + esc(l.mem.path) + '">■ ' +
       String.fromCharCode(65 + i) + ' ' + esc(memCmpLabel(l)) + '</span>').join('  vs  ');
@@ -3473,7 +3513,7 @@
       return vb - va || a.localeCompare(b);
     }) : chosen;
     const axisH = 26;
-    const concH = ls.length * 30 + 6;   // 顶部并发占用带：每路一条，独占高度
+    const concH = ls.length * 38 + 6;   // 顶部并发占用带：每路一条，独占高度
     const ctx = mcCvEl.getContext('2d');
     const H = Math.max(160, concH + fields.length * MC_ROW_H + axisH);
     prepCv(mcCvEl, ctx, W, H);
@@ -3501,32 +3541,57 @@
       const pad = (yMax - yMin) * 0.08 || Math.abs(yMax) * 0.05 || 1;
       return { f, yMin: yMin - pad, yMax: yMax + pad };
     });
-    // 并发占用：顶部单独一条带，每路按展示顺序上下排列，淡色；不再塞进每个字段行
-    const conc = ls.map(({ l }) => memCmpConc(l, durMax, 600));
-    const concMax = Math.max(1, ...conc.map(c => c.peak));
-    const CONC_LANE_H = 30;
+    // 并发占用：顶部单独一条带，每路按展示顺序上下排列。
+    // 每条带画两根线——活跃（该轨迹在跑，含推理）与工具（沙箱内真在跑命令），
+    // 两根线的间隙就是「在推理」的阶段；只有工具线时看不出这一点。
+    const conc = ls.map(({ l }) => ({
+      tool: memCmpConc(l, durMax, 600, 'tool'),
+      all: memCmpConc(l, durMax, 600, 'all'),
+    }));
+    const concMax = Math.max(1, ...conc.map(c => Math.max(c.tool.peak, c.all.peak)));
+    const CONC_LANE_H = 38;
     ctx.font = '10px Consolas, monospace';
     ctx.fillStyle = C.gutter;
     ctx.fillRect(0, 0, W, concH);
     ls.forEach(({ l, i }, k) => {
       const bandY = 6 + k * CONC_LANE_H;
-      const base = bandY + CONC_LANE_H - 4;
-      const cs = conc[k].pts;
-      const cy = (c) => base - c / concMax * (CONC_LANE_H - 12);
+      const base = bandY + CONC_LANE_H - 6;
+      const span = CONC_LANE_H - 14;
+      const cy = (c) => base - c / concMax * span;
+      const col = MC_COLORS[k % MC_COLORS.length];
       ctx.textAlign = 'right';
-      ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
-      ctx.fillText(String.fromCharCode(65 + i) + ' 工具并发', x0 - 8, bandY + CONC_LANE_H / 2 + 3);
-      if (!cs || !cs.length) return;
-      ctx.beginPath();
-      ctx.moveTo(xx(cs[0][0]), base);
-      for (let j = 0; j < cs.length; j++) ctx.lineTo(xx(cs[j][0]), cy(cs[j][1]));
-      ctx.lineTo(xx(cs[cs.length - 1][0]), base);
-      ctx.closePath();
-      ctx.fillStyle = MC_COLORS[k % MC_COLORS.length] + '22';
-      ctx.fill();
-      ctx.strokeStyle = MC_COLORS[k % MC_COLORS.length] + '99';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.fillText(String.fromCharCode(65 + i) + ' 工具峰 ' + conc[k].tool.peak +
+        ' / 活跃峰 ' + conc[k].all.peak, x0 - 8, bandY + CONC_LANE_H / 2 + 3);
+      const draw = (cs, opt) => {
+        if (!cs || !cs.length) return;
+        ctx.beginPath();
+        ctx.moveTo(xx(cs[0][0]), base);
+        for (let j = 0; j < cs.length; j++) ctx.lineTo(xx(cs[j][0]), cy(cs[j][1]));
+        ctx.lineTo(xx(cs[cs.length - 1][0]), base);
+        ctx.closePath();
+        ctx.fillStyle = col + opt.fill;
+        ctx.fill();
+        ctx.strokeStyle = col + opt.stroke;
+        ctx.lineWidth = opt.w;
+        ctx.setLineDash(opt.dash);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      };
+      // 活跃在下层铺淡色（它是包络），工具在上层实心：两层之间的空隙就是「在推理」
+      draw(conc[k].all.pts, { fill: '1c', stroke: '99', w: 1.1, dash: [3, 3] });
+      draw(conc[k].tool.pts, { fill: '55', stroke: '', w: 1.5, dash: [] });
+      // 峰值刻度：虚线标出该路活跃峰值，右侧标数，避免只看到形状读不出量级
+      if (conc[k].all.peak > 0) {
+        const py = cy(conc[k].all.peak);
+        ctx.strokeStyle = col + '44';
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath(); ctx.moveTo(x0, py); ctx.lineTo(x1, py); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = col + 'cc';
+        ctx.fillText(String(conc[k].all.peak), x1 + 4, py + 3);
+      }
     });
     rows.forEach((row, ri) => {
       const y = concH + ri * MC_ROW_H;
@@ -3570,28 +3635,38 @@
       ctx.fillStyle = '#ffffff55';
       ctx.fillRect(memCmpCursorX, 0, 1, yEnd);
       memCmpEl.querySelector('#mcRead').textContent = '游标 t+' + fmtDur(rel / 1000);
-      // 并发带游标点 + 读数：取游标时刻的 tool 并发值，点画在曲线上，数值贴点旁
+      // 并发带游标点 + 读数：同时给工具与活跃两个值，读数一行里就能判断阶段
       ls.forEach(({ l, i }, k) => {
-        const cs = conc[k].pts;
-        if (!cs || !cs.length) return;
-        const idx = Math.max(0, Math.min(cs.length - 1, Math.round(rel / durMax * (cs.length - 1))));
-        const cc = cs[idx][1];
+        const cT = conc[k].tool.pts, cA = conc[k].all.pts;
+        if ((!cT || !cT.length) && (!cA || !cA.length)) return;
+        const pick = (cs) => {
+          if (!cs || !cs.length) return 0;
+          const idx = Math.max(0, Math.min(cs.length - 1, Math.round(rel / durMax * (cs.length - 1))));
+          return cs[idx][1];
+        };
+        const vt = pick(cT), va = pick(cA);
         const bandY = 6 + k * CONC_LANE_H;
-        const base = bandY + CONC_LANE_H - 4;
-        const py = base - cc / concMax * (CONC_LANE_H - 12);
-        ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
-        ctx.beginPath();
-        ctx.arc(memCmpCursorX, py, 3, 0, Math.PI * 2);
-        ctx.fill();
-        const tag = String.fromCharCode(65 + i) + ' ' + cc;
+        const base = bandY + CONC_LANE_H - 6;
+        const span = CONC_LANE_H - 14;
+        const col = MC_COLORS[k % MC_COLORS.length];
+        [[va, 0], [vt, 1]].forEach(([vv, solid]) => {
+          const py = base - vv / concMax * span;
+          ctx.strokeStyle = col;
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          if (solid) { ctx.arc(memCmpCursorX, py, 3, 0, Math.PI * 2); ctx.fill(); }
+          else { ctx.arc(memCmpCursorX, py, 2.6, 0, Math.PI * 2); ctx.stroke(); }
+        });
+        const tag = String.fromCharCode(65 + i) + ' 工具' + vt + '/活跃' + va;
         ctx.font = '10px Consolas, monospace';
         const tw = ctx.measureText(tag).width;
         const tx = Math.min(memCmpCursorX + 6, x1 - tw - 2);
+        const ty = base - va / concMax * span - 6;
         ctx.fillStyle = 'rgba(8,11,17,0.85)';
-        ctx.fillRect(tx - 2, py - 9, tw + 4, 12);
+        ctx.fillRect(tx - 2, ty - 9, tw + 4, 12);
         ctx.textAlign = 'left';
-        ctx.fillStyle = MC_COLORS[k % MC_COLORS.length];
-        ctx.fillText(tag, tx, py);
+        ctx.fillStyle = col;
+        ctx.fillText(tag, tx, ty);
       });
       rows.forEach((row, ri) => {
         const y = concH + ri * MC_ROW_H;
@@ -3626,8 +3701,8 @@
       });
     } else {
       memCmpEl.querySelector('#mcRead').textContent = memCmpAuto
-        ? '默认 = 两路波形差异最大的 ' + memCmpSel.size + ' 个字段（Δ 越大越不同）· 点字段可增删，或按差异重选'
-        : '已手选 ' + memCmpSel.size + ' 个字段 · 「按差异重选」可恢复默认';
+        ? '顶部：实心=工具并发，虚线=活跃轨迹（两条之间的间隙=正在推理）· 默认字段 = 两路波形差异最大的 ' + memCmpSel.size + ' 个（Δ 越大越不同）· 点字段可增删，或按差异重选'
+        : '顶部：实心=工具并发，虚线=活跃轨迹 · 已手选 ' + memCmpSel.size + ' 个字段 · 「按差异重选」可恢复默认';
     }
     // 底部时间轴：t+ 相对 run 开始的时长
     ctx.textAlign = 'center';
@@ -3640,6 +3715,336 @@
       ctx.fillText('t+' + fmtDur(rel / 1000), px, yEnd + axisH - 4);
     }
   }
+
+  /* ── per-VM 视图：memlog 的 per_vm 段（每沙箱明细）──────────────
+     主机级 / cgroup 级曲线回答「整机吃多少」，这一层回答「哪个沙箱吃多少、活了多久、
+     什么时候回收」。沙箱数是几十量级、每个沙箱多条指标，数据量比主机级大一个数量级，
+     所以单独接口按指标懒取，也不进「元数据对比」的字段面板。
+     横轴与元数据对比一致：t+ 相对该路 run 的开始时间。 */
+  const memVmEl = document.createElement('div');
+  memVmEl.id = 'memVm';
+  memVmEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>per-VM 视图</b> <span class="dim" id="vmName"></span>' +
+      '<span class="mb-read" id="vmRead"></span>' +
+      '<select id="vmMetric" title="每沙箱曲线的指标">' +
+        '<option value="rss">RSS MB</option><option value="pss">PSS MB</option>' +
+        '<option value="anon">匿名页 MB</option><option value="file">文件页 MB</option>' +
+        '<option value="cpu">CPU %</option><option value="io_r">读 MB/s</option>' +
+        '<option value="io_w">写 MB/s</option><option value="threads">线程数</option>' +
+      '</select>' +
+      '<button class="btn" id="vmReload">重读</button>' +
+      '<button class="btn" id="vmClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-body"><canvas id="vmCv"></canvas></div>' +
+    '<div class="mb-fields" id="vmList"></div>';
+  document.body.appendChild(memVmEl);
+  const vmCvEl = memVmEl.querySelector('#vmCv');
+  const VM_UNIT = { rss: 'MB', pss: 'MB', anon: 'MB', file: 'MB', cpu: '%', io_r: 'MB/s', io_w: 'MB/s', threads: '个' };
+  let vmMetric = 'rss';
+  let vmCursorX = null;
+
+  const memVmLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.mem);
+
+  async function loadLaneVm(lane, metric) {
+    if (!lane || !lane.mem) return null;
+    if (lane.vmCache && lane.vmCache.key === metric) return lane.vmCache.data;
+    try {
+      const res = await fetch('/api/memlog/vm?path=' + encodeURIComponent(lane.mem.path) +
+        '&metric=' + encodeURIComponent(metric));
+      const j = await res.json();
+      if (!j || j.error) { lane.vmErr = (j && j.error) || '读取失败'; lane.vmCache = null; return null; }
+      lane.vmErr = '';
+      lane.vmCache = { key: metric, data: j };
+      return j;
+    } catch (e) {
+      lane.vmErr = String(e && e.message || e);
+      lane.vmCache = null;
+      return null;
+    }
+  }
+
+  async function openMemVm() {
+    memVmEl.style.display = 'flex';
+    memCmpEl.style.display = 'none';
+    memBigEl.style.display = 'none';
+    await reloadMemVm();
+  }
+
+  async function reloadMemVm() {
+    const ls = memVmLanes();
+    memVmEl.querySelector('#vmName').textContent =
+      ls.map(({ l, i }) => laneLetter(i) + '·' + memCmpLabel(l)).join('   vs   ');
+    memVmEl.querySelector('#vmRead').textContent = '读取 per-VM 明细 …';
+    const out = [];
+    for (const { l } of ls) {
+      const d = await loadLaneVm(l, vmMetric);
+      out.push(d);
+    }
+    // 有一路没有 per_vm 段时给出具体原因，而不是画一张空图
+    const bad = ls.filter(({ l }) => !l.vmCache).map(({ l, i }) =>
+      laneLetter(i) + '·' + memCmpLabel(l) + '：' + (l.vmErr || '无 per-VM 明细'));
+    memVmEl.querySelector('#vmRead').textContent = bad.length
+      ? bad.join(' · ')
+      : '活跃=该路同时存在的沙箱数（口径：RSS≥64MB，几 MB 的是残留进程）· 游标看某时刻的活跃数与总占用';
+    renderVmList();
+    drawMemVm();
+  }
+
+  function drawMemVm() {
+    if (memVmEl.style.display === 'none') return;
+    const ls = memVmLanes().filter(({ l }) => l.vmCache && l.vmCache.data);
+    const body = memVmEl.querySelector('.mb-body');
+    const W = body.clientWidth;
+    const ctx = vmCvEl.getContext('2d');
+    const axisH = 26;
+    const bandH = ls.length * 30 + 8;
+    const GANTT_MAX = 20;
+    // 甘特块从 y0+mainH+4 起画，这里把 4px 起始间距一起算进来，H 才不会差几像素
+    const ganttRows = ls.reduce((a, { l }) => {
+      const live = l.vmCache.data.vms.filter(v => v.live).length;
+      if (!live) return a + 22;
+      const shown = Math.min(live, GANTT_MAX);
+      return a + 14 + shown * 6 + (live > shown ? 18 : 0) + 6;
+    }, 4);
+    // 主图吃掉剩余高度：窗口越大曲线越高，别把空间留给空白
+    const mainH = Math.max(170, Math.min(430,
+      (body.clientHeight || 600) - bandH - ganttRows - axisH));
+    const H = Math.max(220, bandH + mainH + ganttRows + axisH);
+    prepCv(vmCvEl, ctx, W, H);
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!ls.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      const anyErr = memVmLanes().map(({ l }) => l.vmErr).filter(Boolean);
+      ctx.fillText(anyErr.length ? anyErr[0] : '先给某一路加载 memlog（示波视图里的「元数据」）', 20, 30);
+      return;
+    }
+    const durMax = Math.max(...ls.map(({ l }) => memCmpDur(l)));
+    const x0 = 190, x1 = W - 58;
+    const xx = (relMs) => x0 + relMs / durMax * (x1 - x0);
+    const unit = VM_UNIT[vmMetric] || '';
+    ctx.font = '10px Consolas, monospace';
+
+    /* A. 每路活跃沙箱数：台阶线，峰值标数 */
+    ctx.fillStyle = C.gutter;
+    ctx.fillRect(0, 0, W, bandH);
+    const peakN = Math.max(1, ...ls.map(({ l }) => l.vmCache.data.peak.n || 0));
+    ls.forEach(({ l, i }, k) => {
+      const d = l.vmCache.data;
+      const col = MC_COLORS[i % MC_COLORS.length];
+      const bandY = 6 + k * 30;
+      const base = bandY + 30 - 6;
+      const yy = (v) => base - v / peakN * 16;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = col;
+      ctx.fillText(laneLetter(i) + ' 活跃 ' + (d.peak.n || 0) + ' / 共 ' + d.n_vm, x0 - 8, bandY + 16);
+      const pts = d.agg.n_live || [];
+      if (!pts.length) return;
+      const anch = memCmpAnchor(l);
+      ctx.beginPath();
+      let started = false;
+      for (const [t, v] of pts) {
+        const rel = t - anch;
+        if (rel < 0 || rel > durMax) continue;
+        const px = xx(rel), py = yy(v);
+        if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    });
+
+    /* B. 每沙箱曲线（只画真启动过的；残留进程单独在底部计数） */
+    const y0 = bandH, y1 = bandH + mainH;
+    let vMax = 0;
+    for (const { l } of ls) for (const v of l.vmCache.data.vms) {
+      if (!v.live) continue;
+      for (const [, val] of v.pts) if (val > vMax) vMax = val;
+    }
+    const tick = niceTicks(vMax || 1, 3);
+    const vy = (val) => y1 - 10 - (val / tick.top) * (mainH - 26);
+    ctx.fillStyle = C.bandBg;
+    ctx.fillRect(x0, y0, x1 - x0, mainH);
+    for (const tv of tick.ticks) {
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(x0, vy(tv), x1 - x0, 1);
+      ctx.fillStyle = C.dim;
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtMem(tv), x1 + 4, vy(tv) + 3);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillStyle = C.text;
+    ctx.fillText('每沙箱 ' + vmMetric.toUpperCase() + '  ' + unit, x0 - 8, y0 + 14);
+    ls.forEach(({ l, i }) => {
+      const d = l.vmCache.data;
+      const col = MC_COLORS[i % MC_COLORS.length];
+      const anch = memCmpAnchor(l);
+      const live = d.vms.filter(v => v.live).sort((a, b) => b.peak - a.peak).slice(0, 12);
+      live.forEach((v, k) => {
+        ctx.strokeStyle = col;
+        ctx.globalAlpha = 0.92 - Math.min(0.62, k * 0.06);
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        let started = false;
+        for (const [t, val] of v.pts) {
+          const rel = t - anch;
+          if (rel < 0 || rel > durMax) continue;
+          const px = xx(rel), py = vy(val);
+          if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      });
+    });
+
+    /* C. 每沙箱生命周期：一条横条 = 从第一次出现在采样里到最后一次。
+          沙箱数可达几十个，逐条写标签会糊成一片：只给寿命最长的 3 条标名字，
+          其余靠底部摘要和曲线段本身看节奏。 */
+    let gy = y0 + mainH + 4;
+    const dbgRows = [];
+    ls.forEach(({ l, i }) => {
+      const d = l.vmCache.data;
+      const col = MC_COLORS[i % MC_COLORS.length];
+      const anch = memCmpAnchor(l);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = col;
+      ctx.fillText(laneLetter(i) + ' 沙箱寿命', x0 - 8, gy + 9);
+      const live = d.vms.filter(v => v.live).sort((a, b) => a.t0 - b.t0);
+      if (!live.length) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = C.dim;
+        ctx.fillText('（没有 RSS≥64MB 的沙箱，只有 ' + d.n_vm + ' 个残留进程）', x0 + 6, gy + 9);
+        gy += 22;
+        return;
+      }
+      const shown = live.slice(0, GANTT_MAX);
+      shown.forEach((v, k) => {
+        const s = Math.max(0, v.t0 - anch), e = Math.min(durMax, v.t1 - anch);
+        const px0 = xx(s), px1 = Math.max(px0 + 2, xx(e));
+        const rowY = gy + 6 + k * 6;
+        ctx.fillStyle = col + '66';
+        ctx.fillRect(px0, rowY, px1 - px0, 4);
+        ctx.fillStyle = col;
+        ctx.fillRect(px0, rowY, Math.min(2, px1 - px0), 4);
+      });
+      // 行距只有 6px，9px 字号的标签标在相邻行上会糊成一片：
+      // 按寿命从长到短挑，且与已挑中的行至少隔 2 行
+      const tagRows = [];
+      shown.map((v, k) => ({ v, k }))
+        .sort((a, b) => (b.v.t1 - b.v.t0) - (a.v.t1 - a.v.t0))
+        .forEach(({ v, k }) => {
+          if (tagRows.length >= 3) return;
+          if (tagRows.some(r => Math.abs(r.k - k) < 2)) return;
+          tagRows.push({ v, k });
+        });
+      tagRows.forEach(({ v, k }) => {
+        const s = Math.max(0, v.t0 - anch), e = Math.min(durMax, v.t1 - anch);
+        const px1 = Math.max(xx(s) + 2, xx(e));
+        const rowY = gy + 6 + k * 6;
+        const txt = v.label + ' ' + fmtMem(v.rss_peak) + 'MB';
+        ctx.font = '9px Consolas, monospace';
+        const tw = ctx.measureText(txt).width;
+        // 右侧 x1 以外是纵轴刻度列，条子贴到边界时标签往里翻，别盖住刻度数字
+        const lx = px1 + 5 + tw > x1 - 3 ? Math.max(x0 + 2, px1 - tw - 5) : px1 + 5;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = C.bg;
+        ctx.fillRect(lx - 2, rowY - 3, tw + 4, 10);
+        ctx.fillStyle = col;
+        ctx.fillText(txt, lx, rowY + 4);
+        ctx.font = '10px Consolas, monospace';
+      });
+      if (live.length > shown.length) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = C.dim;
+        ctx.fillText('＋' + (live.length - shown.length) + ' 个更短的沙箱未画', x0 + 6,
+          gy + 6 + shown.length * 6 + 10);
+      }
+      gy += 14 + shown.length * 6 + (live.length > shown.length ? 18 : 0) + 6;
+      dbgRows.push({ lane: i, live: live.length, shown: shown.length, gy, anch });
+    });
+
+    /* D. 时间轴 + 游标 */
+    const yEnd = gy;
+    window.__vmDbg = { bandH, mainH, y0, yEnd, H, rows: dbgRows, durMax, x0, x1 };
+    ctx.textAlign = 'center';
+    ctx.font = '11px Consolas, monospace';
+    for (let k = 0; k <= 8; k++) {
+      const rel = durMax * k / 8, px = xx(rel);
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(px, yEnd, 1, axisH - 16);
+      ctx.fillStyle = C.dim;
+      ctx.fillText('t+' + fmtDur(rel / 1000), px, yEnd + axisH - 4);
+    }
+    if (vmCursorX != null && vmCursorX >= x0 && vmCursorX <= x1) {
+      const rel = (vmCursorX - x0) / (x1 - x0) * durMax;
+      ctx.fillStyle = '#ffffff55';
+      ctx.fillRect(vmCursorX, 0, 1, yEnd);
+      const bits = ls.map(({ l, i }) => {
+        const d = l.vmCache.data;
+        const anch = memCmpAnchor(l);
+        const pick = (pts) => {
+          let best = 0, bd = Infinity;
+          for (const [t, v] of pts) {
+            const dd = Math.abs(t - anch - rel);
+            if (dd < bd) { bd = dd; best = v; }
+          }
+          return best;
+        };
+        const n = pick(d.agg.n_live || []);
+        const rss = pick(d.agg.rss || []);
+        const val = pick((d.vms.filter(v => v.live)[0] || {}).pts || []);
+        return laneLetter(i) + ' 活跃' + n + ' Σrss' + fmtMem(rss) + 'MB · 最大VM ' + fmtMem(val) + unit;
+      });
+      memVmEl.querySelector('#vmRead').textContent = 't+' + fmtDur(rel / 1000) + ' · ' + bits.join(' | ');
+    }
+  }
+
+  /* 底部：每路一行摘要（VM 数、真启动数、峰值并发、寿命最长者、ΣRSS 峰） */
+  function renderVmList() {
+    const ls = memVmLanes();
+    memVmEl.querySelector('#vmList').innerHTML = ls.map(({ l, i }) => {
+      const d = l.vmCache && l.vmCache.data;
+      const col = MC_COLORS[i % MC_COLORS.length];
+      if (!d) {
+        return '<span style="color:' + col + '">' + esc(laneLetter(i) + '·' + memCmpLabel(l)) +
+          '</span> <span class="dim">' + esc(l.vmErr || '未读取') + '</span>';
+      }
+      const live = d.vms.filter(v => v.live);
+      const longest = live.slice().sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0))[0];
+      const top = live.slice().sort((a, b) => b.rss_peak - a.rss_peak)[0];
+      return '<span style="color:' + col + '">' + esc(laneLetter(i) + '·' + memCmpLabel(l)) + '</span>' +
+        '<span class="dim"> · 沙箱 ' + d.n_vm + '（真启动 ' + d.n_live + '）· 峰值并发 ' + (d.peak.n || 0) +
+        ' · ΣRSS 峰 ' + fmtMem(d.peak.rss || 0) + 'MB' +
+        (top ? ' · 最大 ' + esc(top.label) + ' ' + fmtMem(top.rss_peak) + 'MB' : '') +
+        (longest ? ' · 最长 ' + fmtDur((longest.t1 - longest.t0) / 1000) : '') + '</span>';
+    }).join('');
+  }
+
+  const memVmBtnEl = document.querySelector('#memVmBtn');
+  if (memVmBtnEl) memVmBtnEl.addEventListener('click', () => { openMemVm(); });
+  memVmEl.querySelector('#vmClose').addEventListener('click', () => {
+    memVmEl.style.display = 'none';
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memVmEl.style.display !== 'none') {
+      e.stopPropagation();
+      memVmEl.style.display = 'none';
+      vmCursorX = null;
+    }
+  }, true);
+  memVmEl.querySelector('#vmMetric').addEventListener('change', async (e) => {
+    vmMetric = e.target.value;
+    await reloadMemVm();
+  });
+  memVmEl.querySelector('#vmReload').addEventListener('click', () => { reloadMemVm(); });
+  vmCvEl.addEventListener('mousemove', (e) => {
+    const r = vmCvEl.getBoundingClientRect();
+    vmCursorX = e.clientX - r.left;
+    drawMemVm();
+  });
+  vmCvEl.addEventListener('mouseleave', () => { vmCursorX = null; drawMemVm(); });
 
   /* ── 对比视图：跨 run 轨迹宽表（per-traj 口径）+ 倍数热力 ──────────
      列 = 各 lane（每路取当前 run，或「全部 run」聚合）；行 = (issue, sample) 轨迹键（famKey）。
@@ -3656,9 +4061,11 @@
       let eps = [];
       if (all) { for (const rr of lane.payload.runs) eps = eps.concat(rr.episodes); }
       else eps = r.episodes;
-      // 录制路的列名直接说清身份：它比对的是数据集里录下的那次，而不是某次回放
-      const rec = isRecLane(lane);
-      const what = rec ? '录制' + (all && lane.payload.runs.length > 1 ? '(' + lane.payload.runs.length + ' run)' : '')
+      // 「录制」这个身份只留给数据集自带的轨迹目录（自动发现/只当基线的那一路）。
+      // 自己跑出来的 run 即便也是 trace-v3，列名还是 run id——否则几路全叫「录制」，
+      // 根本分不清谁是谁。
+      const dsRec = (lane.autoBase || lane.cmpOnly) && isRecLane(lane);
+      const what = dsRec ? '录制' + (all && lane.payload.runs.length > 1 ? '(' + lane.payload.runs.length + ' run)' : '')
         : (all ? '全部run' : lane.runId);
       cols.push({ idx, lane, name: laneLetter(idx) + '·' + what,
         runs: lane.payload.runs.map(x => x.id), eps });
@@ -3673,6 +4080,10 @@
       const i = cols.findIndex(c => c.idx === +state.cmpBase);
       if (i >= 0) return i;
     }
+    // 自动发现的数据集轨迹目录优先：它是「这场实验拿来做参照的那一次」，
+    // 而自己跑出来的 run 即便也是 trace-v3，也只是被比较的一方
+    const ds = cols.findIndex(c => c.lane.autoBase || c.lane.cmpOnly);
+    if (ds >= 0) return ds;
     let bi = -1, bs = 0.5;
     cols.forEach((c, i) => {
       const s = laneRecShare(c.lane);
@@ -3689,7 +4100,7 @@
       a.push(ep); byKey.set(k, a);
     }
     const firsts = [...byKey.values()].map(a => a.slice().sort((x, y) => (x.start || 0) - (y.start || 0))[0]);
-    let wall = 0, tool = 0;
+    let wall = 0, tool = 0, ct = 0, pt = 0, ttft = 0, gen = 0, ntok = 0;
     const per = [], byTrace = new Map();
     for (const ep of firsts) {
       wall += ep.wall || 0; tool += ep.tool_s || 0;
@@ -3697,6 +4108,8 @@
       const a = byTrace.get(ep.trace) || [0, 0];
       a[0] += ep.tool_s || 0; a[1] += ep.wall || 0;
       byTrace.set(ep.trace, a);
+      const tk = ep.tok;
+      if (tk && tk.ct > 0) { ct += tk.ct; pt += tk.pt; ttft += tk.ttft || 0; gen += ep.gen_s || 0; ntok++; }
     }
     const rhos = [...byTrace.values()].filter(a => a[1] > 0).map(a => a[0] / a[1]);
     return {
@@ -3704,6 +4117,9 @@
       micro: wall > 0 ? tool / wall : null,
       perAvg: per.length ? per.reduce((a, b) => a + b, 0) / per.length : null,
       macro: rhos.length ? rhos.reduce((a, b) => a + b, 0) / rhos.length : null,
+      ct, pt, ttft, gen, ntok,
+      tps: (ct > 0 && gen > ttft) ? ct / (gen - ttft) : null,
+      genShare: wall > 0 ? gen / wall : null,
     };
   }
 
@@ -3773,13 +4189,16 @@
       for (const [k, list] of byKey) {
         list.sort((x, y) => (x.start || 0) - (y.start || 0));
         const use = firstOnly ? list.slice(0, 1) : list;
-        let g = 0, t = 0, w = 0, to = 0, tos = 0;
+        let g = 0, t = 0, w = 0, to = 0, tos = 0, ct = 0, ttft = 0, pt = 0;
         for (const ep of use) {
           g += ep.gen_s || 0; t += ep.tool_s || 0; w += ep.wall || 0;
           const ts = ep.tstat;
           if (ts) { to += ts.to || 0; tos += Math.max(0, (ts.sum || 0) - (ts.sc || 0)); }
+          // token 口径：回放的 gen 是录制延迟的复读，只有 token 数能跨模型/跨硬件换算
+          const tk = ep.tok;
+          if (tk) { ct += tk.ct || 0; pt += tk.pt || 0; ttft += tk.ttft || 0; }
         }
-        cells.set(k, { g, t, w, n: use.length, to, tos });
+        cells.set(k, { g, t, w, n: use.length, to, tos, ct, pt, ttft });
       }
       return cells;
     };
@@ -3790,7 +4209,7 @@
         // 基线 = 录制数据整体：该路合并成一柱（录制目录常按 issue 分 run 存放，合并后每轨迹一根基线柱）
         const eps = lane.cmpRun === '*' ? lane.payload.runs.reduce((a, r) => a.concat(r.episodes), [])
           : (lane.payload.runs.find(r => r.id === lane.runId) || { episodes: [] }).episodes;
-        const rec = isRecLane(lane);
+        const rec = isDatasetLane(lane);
         bars.push({ li, runId: 'baseline', name: laneLetter(li) + (rec ? '·基线(录制)' : '·基线'),
           peak: -1, isBase: true, rec, cells: mkCells(eps) });
         return;
@@ -3837,13 +4256,17 @@
     const tot = g + t || 1;
     const pc = (v) => (v / tot * 100).toFixed(1) + '%';
     const nTo = +sel.to || 0;
+    const tokTxt = (+sel.ct > 0)
+      ? ' · ' + fmtTok(+sel.ct) + ' token' + (sel.tps ? '（实测 ' + sel.tps + ' tok/s）' : '') +
+        (state.cmpTok ? ' · 按 ' + state.cmpTps + ' tok/s 重算推理 ' + fmtDur(g) + '（原 ' + fmtDur(+sel.graw || 0) + '）' : '')
+      : '';
     return (sel.row || '') + ' · ' + (sel.col || '') + ' · ' +
       (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + pc(g) + ') · ' +
       (sel.kind === 't' ? '▸' : '') + '工具 ' + fmtDur(tn) + ' (' + pc(tn) + ')' +
       (tmo > 0.5 ? ' · ' + (sel.kind === 'o' ? '▸' : '') + '超时 ' + fmtDur(tmo) + ' (' + pc(tmo) +
         '，' + (nTo % 1 ? nTo.toFixed(1) : Math.round(nTo)) + ' 次卡满上限)' : '') +
       ' · 每回放合计 ' + fmtDur(tot) + ' · 回放 ' + (sel.n || '1') + ' · ' +
-      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk);
+      (+sel.pk < 0 ? '基线(录制)' : '总并发 ' + sel.pk) + tokTxt;
   }
   function applyCmpSel(box) {
     const ro = $('#gcReadout');
@@ -3871,7 +4294,14 @@
     const val = (bar, key) => {
       const c = bar.cells.get(key);
       if (!c || !c.n) return null;
-      return { g: c.g / c.n, t: c.t / c.n, w: c.w / c.n, n: c.n, to: c.to / c.n, tos: c.tos / c.n };
+      // 推理段：默认用实测 gen（回放是录制延迟的复读）；开启 token 口径后
+      // 按 ttft + 完成token ÷ 吞吐 重算，各柱的推理段才能跨模型/跨硬件比较
+      const g = (state.cmpTok && c.ct > 0)
+        ? (c.ttft + c.ct / Math.max(1, state.cmpTps)) / c.n
+        : c.g / c.n;
+      return { g, t: c.t / c.n, w: c.w / c.n, n: c.n, to: c.to / c.n, tos: c.tos / c.n,
+        ct: (c.ct || 0) / c.n, pt: (c.pt || 0) / c.n, ttft: (c.ttft || 0) / c.n,
+        gRaw: c.g / c.n, tps: (c.ct > 0 && c.g > c.ttft) ? c.ct / (c.g - c.ttft) : null };
     };
     const readout = '<div class="gc-readout" id="gcReadout">' + CMP_HINT + '</div>';
     // 有卡满上限的命令超时就把红段加进图例（没有则不提，避免误读）
@@ -3906,7 +4336,9 @@
         const tmo = Math.min(v.t, Math.max(0, v.tos)), tn = v.t - tmo;
         const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
         const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
-          '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
+          '" data-g="' + v.g.toFixed(1) + '" data-graw="' + v.gRaw.toFixed(1) +
+          '" data-ct="' + Math.round(v.ct) + '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
+          '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
           '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
           '" data-tos="' + v.tos.toFixed(1) + '"';
         const seg = (kind, sec, p, label) =>
@@ -3978,7 +4410,9 @@
           const tmo = Math.min(v.t, Math.max(0, v.tos)), tn = v.t - tmo;
           const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
           const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
-            '" data-g="' + v.g.toFixed(1) + '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
+            '" data-g="' + v.g.toFixed(1) + '" data-graw="' + v.gRaw.toFixed(1) +
+            '" data-ct="' + Math.round(v.ct) + '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
+            '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
             '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
             '" data-tos="' + v.tos.toFixed(1) + '"';
           const seg = (kind, sec, p, label) =>
@@ -4046,7 +4480,7 @@
     if (REC_PROBE.state !== 'idle') return;
     REC_PROBE.state = 'probing';
     try {
-      if (state.lanes.some(l => l.payload && isRecLane(l))) return;
+      if (state.lanes.some(l => l.payload && isDatasetLane(l))) return;
       const src = state.lanes.find(l => l.payload && l.payload.runs.length);
       if (!src) return;
       const ds = datasetNameOf(src);
@@ -4089,6 +4523,11 @@
     $('#cmpTable').style.display = state.cmpView === 'table' ? '' : 'none';
     $('#cmpSplitLbl').style.display = state.cmpView === 'chart' ? '' : 'none';
     $('#cmpSplit').checked = state.cmpSplit;
+    if ($('#cmpTok')) {
+      $('#cmpTok').checked = state.cmpTok;
+      tokTpsEl.value = state.cmpTps;
+      tokTpsEl.disabled = !state.cmpTok;
+    }
     if (!cols.length) {
       $('#cmpCols').innerHTML = ''; $('#cmpBase').innerHTML = '';
       $('#cmpChart').innerHTML = '';
@@ -4138,13 +4577,14 @@
     }
     // 构建标记挂在两种视图都会写到的那一行上：换版本后一眼确认页面跑的是哪一版
     const baseCol = cols[baseCi];
-    const recOther = cols.find(c => c !== baseCol && isRecLane(c.lane));
-    const baseNote = isRecLane(baseCol.lane)
+    const recOther = cols.find(c => c !== baseCol && isDatasetLane(c.lane));
+    const baseNote = isDatasetLane(baseCol.lane)
       ? ' · 基线 = ' + baseCol.name + (state.cmpBaseUser ? '（手选）' : '（自动：录制数据）')
       : (recOther ? ' · 基线 = ' + baseCol.name + '（手选；录制路 = ' + recOther.name + '）'
         : ' · 基线 = ' + baseCol.name + '（未找到录制数据）');
     $('#cmpHint').textContent = state.cmpView === 'chart'
-      ? '构建 ' + BUILD + ' · 红段 = 命令卡满超时上限' + baseNote
+      ? '构建 ' + BUILD + ' · 红段 = 命令卡满超时上限' +
+        (state.cmpTok ? ' · 推理按 ' + state.cmpTps + ' tok/s 重算' : '') + baseNote
       : vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' +
         baseCol.name + ') · ≥299s 超时剔除 · 构建 ' + BUILD;
     const foot = cols.map((c, ci) => {
@@ -4155,6 +4595,9 @@
         '<span>键 ' + m.n + ' · 类型 ' + m.k + ' · Σwall ' + fmtDur(m.wall) + '</span>' +
         '<span>σ_tool 微平均 <b class="acc">' + (m.micro == null ? '-' : (m.micro * 100).toFixed(1) + '%') + '</b></span>' +
         '<span>逐条 ' + (m.perAvg == null ? '-' : (m.perAvg * 100).toFixed(1) + '%') + ' · 宏平均 M ' + (m.macro == null ? '-' : (m.macro * 100).toFixed(1) + '%') + '</span>' +
+        (m.ct > 0 ? '<span title="录制轨迹逐步记了 prompt/completion token；回放把 token 数原样带下来，gen 秒数也是录制延迟的复读，所以两路必须按 token 换算才可比">推理 ' +
+          fmtTok(m.ct) + ' token · 实测 <b>' + (m.tps ? m.tps.toFixed(0) : '-') + ' tok/s</b>' +
+          (m.genShare != null ? ' · gen 占 ' + (m.genShare * 100).toFixed(0) + '%' : '') + '</span>' : '') +
         '<span class="' + (N != null && N > 1.2 ? 'warn' : '') + '">N = M/M_base ' + (N == null ? '-' : N.toFixed(3)) + '</span></div>';
     });
     $('#cmpFoot').innerHTML = foot.join('');
@@ -4352,6 +4795,8 @@
         cmpBaseUser: state.cmpBaseUser === true,
         cmpView: state.cmpView,
         cmpSplit: state.cmpSplit,
+        cmpTok: state.cmpTok,
+        cmpTps: state.cmpTps,
         firstOnly: $('#cmpFirst').checked,
       }));
     } catch (e) { /* 忽略 */ }
@@ -4406,6 +4851,8 @@
     }
     state.cmpView = spec.cmpView === 'table' ? 'table' : 'chart';
     state.cmpSplit = !!spec.cmpSplit;
+    if (typeof spec.cmpTok === 'boolean') state.cmpTok = spec.cmpTok;
+    if (+spec.cmpTps > 0) state.cmpTps = +spec.cmpTps;
     if (typeof spec.firstOnly === 'boolean') $('#cmpFirst').checked = spec.firstOnly;
     state.activeLane = Math.min(Math.max(0, +spec.activeLane || 0), state.lanes.length - 1);
     fitView();
@@ -4457,7 +4904,9 @@
 
   // 调试句柄：控制台里 window.scopeDebug 可直接操作内部状态（排查/验证用）
   window.scopeDebug = { state, draw, renderAll, renderCmp, renderCmpChart, chartRunBars, cmpSelText, cmpData, colMetrics, setScreen, applyMemLayout, memGroups, memH, scanPath, loadMemlogFile, openMemMenu, memPrefsOf, saveMemPrefs, openMemBig, closeMemBig, drawMemBig, openMemCmp, closeMemCmp, drawMemCmp, saveSetup, restoreSetup,
-    addLane, applyPayload, baseCiOf, laneRecShare, ensureRecordBaseLane, mcRankFields, mcPickTop, mcKeyOf, cmpLaneCols, memCmpSelRef: () => memCmpSel, memCmpScoreRef: () => memCmpScore };
+    addLane, applyPayload, baseCiOf, laneRecShare, ensureRecordBaseLane, mcRankFields, mcPickTop, mcKeyOf, cmpLaneCols, memCmpSelRef: () => memCmpSel, memCmpScoreRef: () => memCmpScore,
+    openMemVm, reloadMemVm, drawMemVm, loadLaneVm, memVmLanes, vmSetMetric: (m) => { vmMetric = m; return reloadMemVm(); }, vmMetricRef: () => vmMetric,
+    memCmpLanes, memCmpConc, memCmpAnchor, memCmpLabel };
 
   boot();
 })();

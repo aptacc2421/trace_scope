@@ -89,6 +89,7 @@ def scan_json(path_str: str, refresh: bool = False) -> bytes:
 SPAN_CACHE_MAX = 400  # 最多缓存 400 条 episode 的 spans（约几万 span），超出淘汰最早条目
 
 MEMLOG_CACHE: dict[str, tuple] = {}  # path -> (mtime_ns, size, json_bytes)
+VM_CACHE: dict[str, tuple] = {}      # path -> ((mtime_ns, size, metric), json_bytes)
 
 
 def memlog_json(path_str: str, ref_ms=None) -> bytes:
@@ -106,6 +107,24 @@ def memlog_json(path_str: str, ref_ms=None) -> bytes:
     if len(MEMLOG_CACHE) >= 8:
         MEMLOG_CACHE.pop(next(iter(MEMLOG_CACHE)))
     MEMLOG_CACHE[str(p)] = (sig, None, body)
+    return body
+
+
+def vm_json(path_str: str, metric: str = "rss") -> bytes:
+    """memlog 的 per-VM 明细缓存：按（文件，指标）只解析一次。"""
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"文件不存在: {p}")
+    st = p.stat()
+    sig = (st.st_mtime_ns, st.st_size, metric)
+    hit = VM_CACHE.get(str(p))
+    if hit and hit[0] == sig:
+        return hit[1]
+    d = scope_data.load_memlog_vm(str(p), metric)
+    body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(VM_CACHE) >= 12:
+        VM_CACHE.pop(next(iter(VM_CACHE)))
+    VM_CACHE[str(p)] = (sig, body)
     return body
 
 
@@ -241,6 +260,8 @@ class Handler(BaseHTTPRequestHandler):
                 ref = q.get("ref")
                 self._json_bytes(memlog_json(
                     q.get("path", ""), float(ref) if ref else None))
+            elif u.path == "/api/memlog/vm":
+                self._json_bytes(vm_json(q.get("path", ""), q.get("metric") or "rss"))
             elif u.path in ("/", "/index.html"):
                 self._index()
             elif u.path == "/data.js":
