@@ -48,6 +48,10 @@ def _data_sig(root: Path) -> str:
             if rec.is_dir():
                 for f in rec.glob("*.json"):
                     parts.append(f"{d.name}/records/{f.name}:{f.stat().st_mtime_ns}")
+                for f in rec.glob("*.guest.csv"):
+                    parts.append(f"{d.name}/records/{f.name}:{f.stat().st_mtime_ns}")
+            for f in d.glob("*.guest.csv"):
+                parts.append(f"{d.name}/{f.name}:{f.stat().st_mtime_ns}")
             for f in d.glob("*.json"):
                 if scope_data.SAMPLE_RE.match(f.name):
                     parts.append(f"{d.name}/{f.name}:{f.stat().st_mtime_ns}")
@@ -90,6 +94,8 @@ SPAN_CACHE_MAX = 400  # 最多缓存 400 条 episode 的 spans（约几万 span�
 
 MEMLOG_CACHE: dict[str, tuple] = {}  # path -> (mtime_ns, size, json_bytes)
 VM_CACHE: dict[str, tuple] = {}      # path -> ((mtime_ns, size, metric), json_bytes)
+GUEST_CACHE: dict[str, tuple] = {}   # path -> ((mtime_ns, size), json_bytes)
+RUN_GUEST_CACHE: dict[str, tuple] = {}  # run 目录 -> ((sig), json_bytes)
 
 
 def memlog_json(path_str: str, ref_ms=None) -> bytes:
@@ -125,6 +131,50 @@ def vm_json(path_str: str, metric: str = "rss") -> bytes:
     if len(VM_CACHE) >= 12:
         VM_CACHE.pop(next(iter(VM_CACHE)))
     VM_CACHE[str(p)] = (sig, body)
+    return body
+
+
+def _guest_sig(paths: list) -> tuple:
+    """一组 guest.csv 的 (mtime,size) 指纹，任一变化即失效。"""
+    sig = []
+    for f in paths:
+        try:
+            st = Path(f).stat()
+            sig.append((f, st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((f, -1, -1))
+    return tuple(sig)
+
+
+def guest_json(path_str: str, run_paths=None) -> bytes:
+    """单份 guest.csv 或整个 run 的 guest 集合 → 解析结果缓存。
+
+    run_paths 给定时按整组指纹缓存（一键加载整 run 用），否则缓存单文件。
+    """
+    if run_paths is not None:
+        sig = _guest_sig(run_paths)
+        hit = RUN_GUEST_CACHE.get(path_str)
+        if hit and hit[0] == sig:
+            return hit[1]
+        d = scope_data.load_runs_guest(Path(path_str))
+        body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(RUN_GUEST_CACHE) >= 16:
+            RUN_GUEST_CACHE.pop(next(iter(RUN_GUEST_CACHE)))
+        RUN_GUEST_CACHE[path_str] = (sig, body)
+        return body
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"文件不存在: {p}")
+    st = p.stat()
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = GUEST_CACHE.get(str(p))
+    if hit and hit[0] == sig:
+        return hit[1]
+    d = scope_data.load_guest_csv(str(p))
+    body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(GUEST_CACHE) >= 32:
+        GUEST_CACHE.pop(next(iter(GUEST_CACHE)))
+    GUEST_CACHE[str(p)] = (sig, body)
     return body
 
 
@@ -262,6 +312,13 @@ class Handler(BaseHTTPRequestHandler):
                     q.get("path", ""), float(ref) if ref else None))
             elif u.path == "/api/memlog/vm":
                 self._json_bytes(vm_json(q.get("path", ""), q.get("metric") or "rss"))
+            elif u.path == "/api/guest/ls":
+                self._json(scope_data.list_guest_csv(q.get("path", "")))
+            elif u.path == "/api/guest/load":
+                self._json_bytes(guest_json(q.get("path", "")))
+            elif u.path == "/api/guest/run":
+                paths = [v for k, v in q.items() if k.startswith("f") and k[1:].isdigit()]
+                self._json_bytes(guest_json(q.get("path", ""), paths))
             elif u.path in ("/", "/index.html"):
                 self._index()
             elif u.path == "/data.js":

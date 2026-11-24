@@ -154,17 +154,17 @@
   #memMenu .mm-grp-row { margin-top: 4px; padding-top: 4px; }
   #memMenu .mm-f-row { padding-left: 18px; }
   #memBig .mm-grp { display: flex; flex-direction: column; }
-  #memBig, #memCmp, #memVm {
+  #memBig, #memCmp, #memVm, #memGuest {
     position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
     background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
-  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
-  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body { flex: 1; min-height: 0; }
+  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
+  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body { flex: 1; min-height: 0; }
   #memCmp .mb-body { overflow-y: auto; }
-  #memVm .mb-body { overflow-y: auto; }
-  #memVm .mb-body canvas { display: block; }
-  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memVm .mb-body, #memGuest .mb-body { overflow-y: auto; }
+  #memVm .mb-body canvas, #memGuest .mb-body canvas { display: block; }
+  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields, #memGuest .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
   /* 对比界面字段面板：大组（数据段）→ 小组（二级段）→ 字段，三层缩进 */
   #memCmp .mb-fields { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; max-height: 196px; }
   #memCmp .mm-seg, #memCmp .mm-grp { display: flex; flex-direction: column; }
@@ -518,6 +518,8 @@
       </div>
       <button class="btn" id="memCmpBtn" title="跨路对比相同元数据：独立界面，横轴以各 run 开始时间为 t=0">元数据对比</button>
       <button class="btn" id="memVmBtn" title="每沙箱明细（memlog 的 per_vm 段）：活跃沙箱数、单 VM 的 RSS/PSS/CPU/IO 曲线与生命周期">per-VM</button>
+      <button class="btn" id="memGuestBtn" title="guest 视角（guest.csv，注入 guest 读 /proc）：每条轨迹一条曲线，与 host 侧 per_vm 是两种独立采样">guest 视图</button>
+      <button class="btn" id="autoLoadBtn" title="扫描当前根目录下所有 run，自动为每路加载轨迹 + host memlog + guest.csv，然后打开 guest 视图">整目录加载</button>
       <button class="btn" id="addLaneBtn" title="加入一路新的数据做对比">＋ 添加一路</button>
     </div>
     <div class="lanes" id="lanes"></div>
@@ -4377,6 +4379,10 @@
 
   const memVmBtnEl = document.querySelector('#memVmBtn');
   if (memVmBtnEl) memVmBtnEl.addEventListener('click', () => { openMemVm(); });
+  const memGuestBtnEl = document.querySelector('#memGuestBtn');
+  if (memGuestBtnEl) memGuestBtnEl.addEventListener('click', () => { openMemGuest(); });
+  const autoLoadBtnEl = document.querySelector('#autoLoadBtn');
+  if (autoLoadBtnEl) autoLoadBtnEl.addEventListener('click', () => { autoLoadAll(); });
   memVmEl.querySelector('#vmClose').addEventListener('click', () => {
     memVmEl.style.display = 'none';
   });
@@ -4413,6 +4419,377 @@
     if (vmRaf) { cancelAnimationFrame(vmRaf); vmRaf = 0; }
     drawMemVm();
   });
+
+  /* ── guest 视图：guest.csv（注入 guest 读 /proc）─────────────────
+     与 per_vm（宿主 fc 进程视角）是两种独立采样。每条轨迹一份 csv，天然一条曲线，
+     不用按结束时刻猜配对：文件名 __sN 就是 sample_idx，直接和轨迹对上。
+     横轴 t = 相对该路 run 开始，颜色与 per-VM 同一套（lane 错色位）。 */
+  const memGuestEl = document.createElement('div');
+  memGuestEl.id = 'memGuest';
+  memGuestEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>guest 视图</b> <span class="dim" id="gsName"></span>' +
+      '<span class="mb-read" id="gsRead"></span>' +
+      '<select id="gsField" title="guest.csv 的字段"></select>' +
+      '<label class="cmp-chk" title="把 _kb 字段按 /1024 显示为 MB"><input type="checkbox" id="gsMB" checked> KB→MB</label>' +
+      '<button class="btn" id="gsReload">重读</button>' +
+      '<button class="btn" id="gsClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-body"><canvas id="gsCv"></canvas></div>' +
+    '<div class="mb-fields" id="gsList"></div>';
+  document.body.appendChild(memGuestEl);
+  const gsCvEl = memGuestEl.querySelector('#gsCv');
+  let gsField = 'anon_kb';
+  let gsCursorX = null;
+  let gsLayoutKey = '';
+  let gsRaf = 0;
+  const gsGuestLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.guest);
+  const gsLabel = (l) => {
+    const r = run(l);
+    return (r && r.id) || l.runId || 'run';
+  };
+
+  async function loadLaneGuest(lane) {
+    if (!lane || !lane.guest) return null;
+    if (lane.guestCache) return lane.guestCache;
+    try {
+      const files = lane.guest.files.map(f => f.path);
+      const qs = files.map((f, k) => 'f' + k + '=' + encodeURIComponent(f)).join('&');
+      const res = await fetch('/api/guest/run?path=' + encodeURIComponent(lane.guest.path) + '&' + qs);
+      const j = await res.json();
+      if (!j || j.error) { lane.guestErr = (j && j.error) || '读取失败'; return null; }
+      lane.guestErr = '';
+      lane.guestCache = j;
+      return j;
+    } catch (e) {
+      lane.guestErr = String(e && e.message || e);
+      return null;
+    }
+  }
+
+  async function openMemGuest() {
+    memGuestEl.style.display = 'flex';
+    memCmpEl.style.display = 'none';
+    memBigEl.style.display = 'none';
+    memVmEl.style.display = 'none';
+    await reloadMemGuest();
+  }
+
+  async function reloadMemGuest() {
+    gsLayoutKey = '';
+    const ls = gsGuestLanes();
+    memGuestEl.querySelector('#gsName').textContent =
+      ls.map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l)).join('   vs   ');
+    memGuestEl.querySelector('#gsRead').textContent = '读取 guest.csv …';
+    for (const { l } of ls) await loadLaneGuest(l);
+    const sel = memGuestEl.querySelector('#gsField');
+    const union = [];
+    ls.forEach(({ l }) => (l.guestCache ? l.guestCache.fields : []).forEach(f => {
+      if (!union.includes(f)) union.push(f);
+    }));
+    sel.innerHTML = union.map(f =>
+      '<option value="' + f + '"' + (f === gsField ? ' selected' : '') + '>' +
+      (GUEST_LABEL[f] || f) + '</option>').join('');
+    if (union.length && !union.includes(gsField)) { gsField = union[0]; sel.value = gsField; }
+    renderGuestList();
+    drawMemGuest();
+  }
+
+  const GUEST_LABEL = {
+    anon_kb: '匿名页', cached_kb: '页缓存', avail_kb: '可用内存', free_kb: '空闲内存',
+    buffers_kb: '缓冲', shmem_kb: '共享内存', total_kb: '总内存', pgfault: '缺页',
+    pgmajfault: '主缺页', rx_bytes: '收字节', tx_bytes: '发字节', rx_pkt: '收包',
+    tx_pkt: '发包', rx_drop: '丢包', procs: '进程数', chrome_rss: 'chrome RSS',
+    chrome_n: 'chrome 数', node_rss: 'node RSS', py_rss: 'python RSS',
+    iowait_ticks: 'iowait', steal_ticks: 'steal', pgpgin_kb: '换入', pgpgout_kb: '换出',
+    pgscan: '扫描页', pgsteal: '回收页', refault: 'refault', disk_rd_kb: '磁盘读',
+    disk_wr_kb: '磁盘写', ctxt: '上下文切换',
+  };
+  const GUEST_MB = new Set(['anon_kb', 'cached_kb', 'avail_kb', 'free_kb', 'buffers_kb',
+    'shmem_kb', 'total_kb', 'pgpgin_kb', 'pgpgout_kb', 'disk_rd_kb', 'disk_wr_kb']);
+  const guestScale = (f) => (GUEST_MB.has(f) && memGuestEl.querySelector('#gsMB').checked) ? 1 / 1024 : 1;
+  const guestUnit = (f) => (GUEST_MB.has(f) && memGuestEl.querySelector('#gsMB').checked) ? 'MB' :
+    (f.endsWith('_kb') ? 'KB' : '');
+
+  function drawMemGuest() {
+    if (memGuestEl.style.display === 'none') return;
+    const ls = gsGuestLanes().filter(({ l }) => l.guestCache);
+    const body = memGuestEl.querySelector('.mb-body');
+    const W = body.clientWidth;
+    const ctx = gsCvEl.getContext('2d');
+    const axisH = 26;
+    const TRAJ_MAX = 12;
+    const trajRows = ls.reduce((a, { l }) => {
+      const n = Math.min(l.guestCache.n, TRAJ_MAX);
+      return a + 18 + (n || 1) * 18 + 8;
+    }, 4);
+    const mainH = Math.max(170, Math.min(900,
+      (body.clientHeight || 600) - trajRows - axisH));
+    const H = Math.max(220, mainH + trajRows + axisH);
+    const lk = [W, body.clientHeight, window.devicePixelRatio, gsField,
+      memGuestEl.querySelector('#gsMB').checked,
+      ls.map(({ l }) => l.guestCache.t1).join('|')].join('|');
+    if (lk !== gsLayoutKey) { prepCv(gsCvEl, ctx, W, H); gsLayoutKey = lk; }
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!ls.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      const err = gsGuestLanes().map(({ l }) => l.guestErr).filter(Boolean);
+      ctx.fillText(err.length ? err[0] : '先给某一路加载 guest.csv（整目录加载会自动挂上）', 20, 30);
+      return;
+    }
+    const durMax = Math.max(...ls.map(({ l }) => memCmpDur(l)));
+    const x0 = 190, x1 = W - 58;
+    const xx = (relMs) => x0 + relMs / durMax * (x1 - x0);
+    const y0 = 0, y1 = mainH;
+    const sc = guestScale(gsField);
+    let vMax = 0;
+    for (const { l } of ls) for (const t of l.guestCache.trajs) {
+      const ser = t.series[gsField] || [];
+      for (const [, v] of ser) if (v * sc > vMax) vMax = v * sc;
+    }
+    const tick = niceTicks(vMax || 1, 3);
+    const vy = (val) => y1 - 10 - (val / tick.top) * (mainH - 26);
+    ctx.fillStyle = C.bandBg;
+    ctx.fillRect(x0, y0, x1 - x0, mainH);
+    ctx.font = '10px Consolas, monospace';
+    for (const tv of tick.ticks) {
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(x0, vy(tv), x1 - x0, 1);
+      ctx.fillStyle = C.dim;
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtMem(tv), x1 + 4, vy(tv) + 3);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillStyle = C.text;
+    ctx.fillText('guest ' + (GUEST_LABEL[gsField] || gsField) + '  ' + guestUnit(gsField), x0 - 8, y0 + 14);
+
+    // 每条轨迹一条曲线，颜色 = vmColOf(lane, 轨迹在 run 中的次序)，与底部轨迹行同色
+    gsGuestHits = [];
+    for (const { l, i } of ls) {
+      const anch = memCmpAnchor(l);
+      const trajs = l.guestCache.trajs;
+      trajs.forEach((t, k) => {
+        const col = vmColOf(i, k);
+        const ser = t.series[gsField] || [];
+        if (!ser.length) return;
+        ctx.beginPath();
+        let started = false;
+        for (const [ts, v] of ser) {
+          const rel = ts - anch;
+          if (rel < 0 || rel > durMax) continue;
+          const px = xx(rel), py = vy(v * sc);
+          if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+
+    // 游标：每条曲线在游标时刻打点并标「lane·sN 值」
+    if (gsCursorX != null && gsCursorX >= x0 && gsCursorX <= x1) {
+      const rel = (gsCursorX - x0) / (x1 - x0) * durMax;
+      const abs = memCmpAnchor(ls[0].l) + rel;
+      const boxes = [];
+      const hits = (b) => boxes.some(o =>
+        !(b[0] > o[0] + o[2] || b[0] + b[2] < o[0] || b[1] > o[1] + o[3] || b[1] + b[3] < o[1]));
+      ctx.strokeStyle = C.dim;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(gsCursorX, y0); ctx.lineTo(gsCursorX, y1 + trajRows + axisH);
+      ctx.stroke();
+      const tags = [];
+      for (const { l, i } of ls) {
+        const anch = memCmpAnchor(l);
+        l.guestCache.trajs.forEach((t, k) => {
+          const ser = t.series[gsField] || [];
+          if (!ser.length) return;
+          let best = ser[0], bd = Infinity;
+          for (const p of ser) { const d = Math.abs(p[0] - (anch + rel)); if (d < bd) { bd = d; best = p; } }
+          if (bd > durMax * 0.06 + 3000) return;
+          const col = vmColOf(i, k);
+          const px = xx(best[0] - anch), py = vy(best[1] * sc);
+          ctx.fillStyle = col;
+          ctx.beginPath(); ctx.arc(px, py, 3.2, 0, 6.2832); ctx.fill();
+          const txt = (ls.length > 1 ? laneLetter(i) + '·' : '') + t.label + ' ' +
+            fmtMem(best[1] * sc) + guestUnit(gsField);
+          tags.push({ txt, col, px, py });
+        });
+      }
+      tags.forEach((t) => {
+        ctx.font = '10px Consolas, monospace';
+        const tw = ctx.measureText(t.txt).width;
+        let lx = null, ly = null;
+        for (const dy of [3, -9, 14, -20, 25, -31]) {
+          for (const side of [1, -1]) {
+            const ax = side > 0 ? t.px + 7 : t.px - 7 - tw;
+            const ay = t.py + dy;
+            if (ax < x0 + 2 || ax + tw > x1 - 2 || ay < y0 + 9 || ay > y1 - 1) continue;
+            if (hits([ax - 2, ay - 9, tw + 4, 11])) continue;
+            lx = ax; ly = ay; break;
+          }
+          if (lx != null) break;
+        }
+        if (lx == null) return;
+        boxes.push([lx - 2, ly - 9, tw + 4, 11]);
+        ctx.fillStyle = C.bg;
+        ctx.fillRect(lx - 3, ly - 10, tw + 6, 13);
+        ctx.fillStyle = lighten(t.col, 0.35);
+        ctx.textAlign = 'left';
+        ctx.fillText(t.txt, lx, ly);
+      });
+    }
+
+    // 底部：每条 guest 轨迹一行，暗段=推理、亮段=工具（和 per-VM 同款），行尾标沙箱内最终 anon 峰值
+    let gy = y1 + 4;
+    for (const { l, i } of ls) {
+      const anch = memCmpAnchor(l);
+      const r = run(l);
+      const eps = (r ? r.episodes : []).slice().sort((a, b) => a.start - b.start).slice(0, TRAJ_MAX);
+      const col0 = MC_COLORS[i % MC_COLORS.length];
+      ctx.textAlign = 'right';
+      ctx.fillStyle = col0;
+      ctx.font = '10px Consolas, monospace';
+      ctx.fillText(laneLetter(i) + ' guest', x0 - 8, gy + 9);
+      l.guestCache.trajs.slice(0, TRAJ_MAX).forEach((t, k) => {
+        const rowY = gy + 12 + k * 18;
+        const col = vmColOf(i, k);
+        ctx.font = '10px Consolas, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = col;
+        ctx.fillText(t.label, x0 - 8, rowY + 8);
+        const sRel = Math.max(0, t.t0 - anch), eRel = Math.min(durMax, t.t1 - anch);
+        const px0 = xx(sRel), px1 = Math.max(px0 + 2, xx(eRel));
+        ctx.fillStyle = col + '22';
+        ctx.fillRect(px0, rowY, px1 - px0, 10);
+        ctx.strokeStyle = col + '99';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px0 + 0.5, rowY + 0.5, px1 - px0 - 1, 9);
+        const ep = eps.find(e => e.samp === t.samp);
+        if (ep) {
+          for (const sp of (ep.spans || [])) {
+            if (sp.t !== 'tool') continue;
+            const ss = Math.max(0, sp.s - anch), ee = Math.min(durMax, sp.e - anch);
+            if (ee < 0 || ss > durMax) continue;
+            const a = xx(ss), b = Math.max(a + 1, xx(ee));
+            ctx.fillStyle = '#ffb84d';
+            ctx.fillRect(a, rowY + 1, b - a, 8);
+          }
+        }
+        const ser = t.series[gsField] || [];
+        const pk = ser.reduce((m, p) => Math.max(m, p[1] * sc), 0);
+        ctx.font = '9px Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = lighten(col, 0.35);
+        ctx.fillText(fmtMem(pk) + guestUnit(gsField), Math.min(x1 - 60, px1 + 5), rowY + 8);
+      });
+      gy += 12 + Math.max(1, Math.min(l.guestCache.n, TRAJ_MAX)) * 18 + 8;
+    }
+
+    const rel0 = gsCursorX != null && gsCursorX >= x0 && gsCursorX <= x1
+      ? (gsCursorX - x0) / (x1 - x0) * durMax : null;
+    memGuestEl.querySelector('#gsRead').textContent = rel0 == null
+      ? '每条轨迹一条曲线，颜色与底部轨迹一致 · 暗段=推理 亮段=工具 · 游标看各轨迹采样值'
+      : 't+' + fmtDur(rel0 / 1000) + ' · ' + (GUEST_LABEL[gsField] || gsField) +
+        ' · guest 视角（注入 guest 读 /proc）';
+  }
+  let gsGuestHits = [];
+
+  function renderGuestList() {
+    const ls = gsGuestLanes().filter(({ l }) => l.guestCache);
+    const parts = [];
+    ls.forEach(({ l, i }) => {
+      const d = l.guestCache;
+      parts.push('<span style="color:' + MC_COLORS[i % MC_COLORS.length] + '">' +
+        laneLetter(i) + ' ' + gsLabel(l) + '</span> · ' + d.n +
+        ' 条 guest 轨迹 / ' + d.fields.length + ' 字段 · ' + fmtDur((d.t1 - d.t0) / 1000));
+    });
+    memGuestEl.querySelector('#gsList').innerHTML = parts.join('<br>') ||
+      '<span class="dim">（无 guest 数据）</span>';
+  }
+
+  memGuestEl.querySelector('#gsField').addEventListener('change', (e) => {
+    gsField = e.target.value;
+    gsLayoutKey = '';
+    drawMemGuest();
+  });
+  memGuestEl.querySelector('#gsMB').addEventListener('change', () => {
+    gsLayoutKey = '';
+    drawMemGuest();
+  });
+  memGuestEl.querySelector('#gsReload').addEventListener('click', () => {
+    gsGuestLanes().forEach(({ l }) => { l.guestCache = null; l.guestErr = ''; });
+    reloadMemGuest();
+  });
+  memGuestEl.querySelector('#gsClose').addEventListener('click', () => {
+    memGuestEl.style.display = 'none';
+    gsCursorX = null;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memGuestEl.style.display !== 'none') {
+      e.stopPropagation();
+      memGuestEl.style.display = 'none';
+      gsCursorX = null;
+    }
+  }, true);
+  gsCvEl.addEventListener('mousemove', (e) => {
+    const r = gsCvEl.getBoundingClientRect();
+    gsCursorX = e.clientX - r.left;
+    if (gsRaf) return;
+    gsRaf = requestAnimationFrame(() => { gsRaf = 0; drawMemGuest(); });
+  });
+  gsCvEl.addEventListener('mouseleave', () => {
+    gsCursorX = null;
+    if (gsRaf) { cancelAnimationFrame(gsRaf); gsRaf = 0; }
+    drawMemGuest();
+  });
+
+  /* 整目录一键加载：扫描当前根目录下所有 run，每路配一条 lane，自动挂
+     轨迹（applyPayload）、host memlog 与 guest.csv，然后打开 guest 视图。
+     兼容两种布局：memlog 在 run 根 / host/ / measure/ 子目录，guest 在 run 根 / records/。 */
+  async function autoLoadAll(pathArg) {
+    const root = (pathArg || $('#rootPath').textContent || '').trim();
+    if (!root || root.startsWith('加载')) { alert('请先打开一个数据目录'); return; }
+    const ep = '/api/scan';
+    let payload;
+    try {
+      const res = await fetch(ep, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: root, refresh: false }),
+      });
+      payload = await res.json();
+    } catch (e) { alert('扫描失败: ' + e); return; }
+    if (!payload || payload.error || !payload.runs || !payload.runs.length) {
+      alert('这个目录下没扫到 run'); return;
+    }
+    const runs = payload.runs;
+    while (state.lanes.length < runs.length) addLane(null);
+    const sep = root.includes('/') ? '/' : '\\';
+    const base = root.replace(/[\\\/]+$/, '');
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i];
+      const lane = state.lanes[i];
+      applyPayload(lane, { root: base + sep + r.id, lazy: true, runs: [r] });
+      lane.guestCache = null; lane.guestErr = '';
+      lane.vmCache = null; lane.vmErr = '';
+      const a = r.assets || {};
+      // host memlog：优先 assets 记录的路径，兼容 run 根 / host / measure
+      const mp = (a.memlog || [])[0];
+      if (mp) await loadMemlogFile(i, mp);
+      // guest：用 assets 里的 csv 路径挂一个轻量描述，loadLaneGuest 再按它取数
+      const gf = a.guest || [];
+      if (gf.length) {
+        lane.guest = { path: base + sep + r.id, files: gf.map(x => ({ path: x.path })) };
+      } else {
+        lane.guest = null;
+      }
+    }
+    state.activeLane = 0;
+    renderAll();
+    await openMemGuest();
+  }
 
   /* ── 对比视图：跨 run 轨迹宽表（per-traj 口径）+ 倍数热力 ──────────
      列 = 各 lane（每路取当前 run，或「全部 run」聚合）；行 = (issue, sample) 轨迹键（famKey）。
@@ -5293,7 +5670,17 @@
           ? vmColOf(i, l.vmSidTraj.get(b.vm.sid)) : null) : null
       }))
     })),
-    memBigConcRef: () => memBigConc };
+    memBigConcRef: () => memBigConc,
+    openMemGuest, reloadMemGuest, loadLaneGuest, gsGuestLanes,
+    autoLoadAll, gsSetField: (f) => { gsField = f; return reloadMemGuest(); },
+    gsFieldRef: () => gsField,
+    gsView: () => gsGuestLanes().map(({ l, i }) => ({
+      lane: i, label: gsLabel(l), err: l.guestErr || null,
+      trajs: l.guestCache ? l.guestCache.trajs.map((t, k) => ({
+        samp: t.samp, label: t.label, n: t.n, col: vmColOf(i, k),
+        peak: Math.max(0, ...(t.series[gsField] || []).map(p => p[1] * guestScale(gsField)))
+      })) : []
+    })) };
 
   boot();
 })();

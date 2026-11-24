@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import csv
 import json
 import re
 from datetime import datetime
@@ -337,12 +338,33 @@ def load_run(run_dir: Path, with_spans: bool = True):
         e["label"] = label
     starts = [e["start"] for e in episodes]
     ends = [e["end"] or e["start"] for e in episodes]
+    # 资产发现：guest.csv（guest 视角）与 memlog（host 视角），只记路径不下发内容，
+    # 前端一键加载按这些路径取数；两种布局都认：file 直接在 run 根，或藏在 records/host 子目录。
+    guest_files = sorted(set(list(run_dir.glob("*.guest.csv")) +
+                             list((run_dir / "records").glob("*.guest.csv"))))
+    guest_assets = [{"samp": (GUEST_CSV_RE.match(f.name).group(2)
+                              if GUEST_CSV_RE.match(f.name) else "0"),
+                     "path": str(f)} for f in guest_files]
+    # memlog 三种布局都认：run 根 / run 的 host·measure 子目录 / 父目录层
+    # （老布局里整机 memlog 采在 run 的父目录或父目录的 measure 子目录，多个 run 共用一份）
+    mem_assets = []
+    seen_mem = set()
+    for sub in (run_dir, run_dir / "host", run_dir / "measure",
+                run_dir.parent, run_dir.parent / "measure", run_dir.parent / "host"):
+        if not sub.is_dir():
+            continue
+        for f in sorted(sub.glob("memlog.jsonl")):
+            if str(f) not in seen_mem:
+                seen_mem.add(str(f))
+                mem_assets.append(str(f))
+
     return {
         "id": run_dir.name,
         "start": min(starts), "end": max(ends),
         "wall_s": round((max(ends) - min(starts)) / 1000, 3),
         "config": {k: cfg[k] for k in CFG_KEYS if k in cfg},
         "peak": _peak_of(episodes),  # 并发峰值预聚合
+        "assets": {"guest": guest_assets, "memlog": mem_assets},
         "episodes": episodes,
     }
 
@@ -418,6 +440,155 @@ def spans_of_episode(src):
     except (json.JSONDecodeError, OSError, IndexError, TypeError):
         return []
     return steps_to_spans(extract_steps(ep))
+
+
+# ── guest 采样（guest_probe / guest.csv）────────────────────────────
+# 每个 episode 一份，文件名 <trace>__sN.guest.csv，注入 guest 内读 /proc 得到，
+# 与 host 的 per_vm（宿主 fc 进程视角）是两种独立采样，不能混为一谈。
+# ts 是浮点 epoch 秒（guest 时钟，与轨迹时钟同步），字段为 /proc/meminfo + 派生量：
+#   total/avail/free/cached/buffers/shmem/anon_kb, pgfault, pgmajfault,
+#   rx/tx_bytes+ pkt, procs, chrome_rss, node_rss, py_rss, iowait_ticks,
+#   pgpgin/pgpgout_kb, pgscan, pgsteal, refault, disk_rd/wr_kb, ctxt
+# 两种表头：早期 20 字段、当前 30 字段；按实际表头解析，缺字段不报错。
+GUEST_CSV_RE = re.compile(r"(.+)__s(\d+)\.guest\.csv$")
+
+# 字段展示名 / 单位：前端字段面板与 guest 视图共用
+GUEST_FIELDS = {
+    "anon_kb": "匿名页 MB", "cached_kb": "页缓存 MB", "avail_kb": "可用 MB",
+    "free_kb": "空闲 MB", "buffers_kb": "缓冲 MB", "shmem_kb": "共享 MB",
+    "total_kb": "总内存 MB", "pgfault": "缺页/次", "pgmajfault": "主缺页/次",
+    "rx_bytes": "收 MB", "tx_bytes": "发 MB", "rx_pkt": "收包", "tx_pkt": "发包",
+    "rx_drop": "丢包", "procs": "进程数", "chrome_rss": "chrome RSS",
+    "chrome_n": "chrome 数", "node_rss": "node RSS", "py_rss": "python RSS",
+    "iowait_ticks": "iowait tick", "steal_ticks": "steal tick",
+    "pgpgin_kb": "换入 MB", "pgpgout_kb": "换出 MB", "pgscan": "扫描页",
+    "pgsteal": "回收页", "refault": "refault", "disk_rd_kb": "磁盘读 MB",
+    "disk_wr_kb": "磁盘写 MB", "ctxt": "上下文切换",
+}
+# 需要 /1024 转成 MB 的字段
+GUEST_KB_FIELDS = {
+    "anon_kb", "cached_kb", "avail_kb", "free_kb", "buffers_kb", "shmem_kb",
+    "total_kb", "pgpgin_kb", "pgpgout_kb", "disk_rd_kb", "disk_wr_kb",
+}
+
+
+def guest_field_scale(field: str) -> float:
+    return 1 / 1024.0 if field in GUEST_KB_FIELDS else 1.0
+
+
+def list_guest_csv(path_str: str) -> dict:
+    """列出目录里（含 records/ 子目录）的 guest.csv 候选，并给出可进入的子目录。"""
+    p = Path(path_str).expanduser().resolve() if path_str else Path.home()
+    if not p.is_dir():
+        raise ValueError(f"目录不存在: {p}")
+    dirs, files = [], []
+    try:
+        for child in sorted(p.iterdir()):
+            if child.name.startswith("."):
+                continue
+            if child.is_dir():
+                dirs.append({"name": child.name,
+                             "n_guest": len(list(child.glob("*.guest.csv")))})
+            elif child.is_file() and GUEST_CSV_RE.match(child.name):
+                st = child.stat()
+                files.append({"name": child.name, "size": st.st_size,
+                              "mtime": int(st.st_mtime)})
+    except PermissionError:
+        raise ValueError(f"无权限读取: {p}")
+    parent = str(p.parent) if p.parent != p else None
+    return {"path": str(p), "parent": parent, "dirs": dirs, "files": files}
+
+
+def load_guest_csv(path_str: str, max_points: int = 2400) -> dict:
+    """解析单份 guest.csv → 各字段时间序列（t=epoch ms，只读）。
+
+    返回结构与 load_memlog 保持一致（fields/series/range/t0/t1/n），
+    前端可复用同一套字段面板；额外带 trace/samp 便于和轨迹配对。
+    数值保持原始单位（_kb 字段前端按 GUEST_KB_FIELDS 换算），peak/range 同原始单位。
+    """
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"文件不存在: {p}")
+    m = GUEST_CSV_RE.match(p.name)
+    trace = m.group(1) if m else p.name.replace(".guest.csv", "")
+    samp = int(m.group(2)) if m else 0
+
+    fields: list[str] = []
+    series: dict[str, list] = {}
+    n = 0
+    t0 = t1 = None
+    with open(p, encoding="utf-8", errors="replace", newline="") as f:
+        rd = csv.DictReader(f)
+        head = rd.fieldnames or []
+        fields = [k for k in head if k and k != "ts"]
+        for k in fields:
+            series[k] = []
+        for row in rd:
+            raw = row.get("ts")
+            if raw is None:
+                continue
+            try:
+                t = int(float(raw) * 1000)
+            except (ValueError, TypeError):
+                continue
+            for k in fields:
+                v = row.get(k)
+                if v is None or v == "":
+                    continue
+                try:
+                    series[k].append([t, float(v)])
+                except (ValueError, TypeError):
+                    continue
+            n += 1
+            if t0 is None or t < t0:
+                t0 = t
+            if t1 is None or t > t1:
+                t1 = t
+    if n == 0:
+        raise ValueError("guest.csv 没有解析到数据行")
+    # 与 memlog 一致：每字段保 min/max 降采样，峰值不丢
+    series = {k: _downsample_minmax(v, max_points) for k, v in series.items()}
+    rng = {}
+    for k, pts in series.items():
+        vs = [v for _, v in pts]
+        rng[k] = [min(vs), max(vs)] if vs else [0.0, 0.0]
+    return {
+        "path": str(p), "trace": trace, "samp": samp,
+        "n": n, "t0": t0, "t1": t1,
+        "fields": fields, "series": series, "range": rng,
+    }
+
+
+def load_runs_guest(run_dir: Path, max_points: int = 1200) -> dict:
+    """解析一个 run 目录下全部 guest.csv → {trajs:[{samp,label,fields,series,range,t0,t1,n},...], ...}。
+
+    samp 直接取文件名 __sN，与轨迹的 sample_idx 对应；这份是 guest 视角采样，
+    不依赖 host memlog，也不和 per_vm 混用。
+    """
+    d = Path(run_dir)
+    files = sorted(list(d.glob("*.guest.csv")) + list((d / "records").glob("*.guest.csv")))
+    trajs = []
+    t0 = t1 = None
+    for f in files:
+        try:
+            g = load_guest_csv(str(f), max_points)
+        except (ValueError, OSError):
+            continue
+        trajs.append({
+            "samp": g["samp"], "label": "s" + str(g["samp"]),
+            "trace": g["trace"], "path": g["path"],
+            "n": g["n"], "t0": g["t0"], "t1": g["t1"],
+            "fields": g["fields"], "series": g["series"], "range": g["range"],
+        })
+        if t0 is None or g["t0"] < t0:
+            t0 = g["t0"]
+        if t1 is None or g["t1"] > t1:
+            t1 = g["t1"]
+    trajs.sort(key=lambda x: x["samp"])
+    if not trajs:
+        raise ValueError("这个 run 没有 guest.csv（guest 采样未开启）")
+    return {"path": str(d), "trajs": trajs, "t0": t0, "t1": t1,
+            "n": len(trajs), "fields": trajs[0]["fields"]}
 
 
 def summary_of(payload) -> dict:
