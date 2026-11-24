@@ -153,18 +153,38 @@
   #memMenu .mm-fields .mm-grp + .mm-grp .mm-grp-row { border-top: 1px solid var(--border); }
   #memMenu .mm-grp-row { margin-top: 4px; padding-top: 4px; }
   #memMenu .mm-f-row { padding-left: 18px; }
+  .per-host { position: relative; display: inline-flex; }
+  .per-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 70; display: none;
+    flex-direction: column; min-width: 190px; padding: 5px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  }
+  .per-host.open .per-menu { display: flex; }
+  .per-menu button {
+    text-align: left; padding: 7px 9px; border: 0; border-radius: 5px;
+    background: transparent; color: var(--text); font: 11px var(--mono); cursor: pointer;
+  }
+  .per-menu button:hover { background: var(--hover, #2b3550); }
   #memBig .mm-grp { display: flex; flex-direction: column; }
-  #memBig, #memCmp, #memVm, #memGuest {
+  #memBig, #memCmp, #memVm, #memGuest, #memPair {
     position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
     background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
-  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
-  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body { flex: 1; min-height: 0; }
+  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h, #memPair .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read, #memPair .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
+  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body { flex: 1; min-height: 0; }
   #memCmp .mb-body { overflow-y: auto; }
-  #memVm .mb-body, #memGuest .mb-body { overflow-y: auto; }
-  #memVm .mb-body canvas, #memGuest .mb-body canvas { display: block; }
-  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields, #memGuest .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body { overflow-y: auto; }
+  #memVm .mb-body canvas, #memGuest .mb-body canvas, #memPair .mb-body canvas { display: block; }
+  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields, #memGuest .mb-fields, #memPair .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memPair .mb-note { font: 11px var(--mono); color: var(--dim); padding: 2px 0 6px; line-height: 1.5; }
+  #memPair .mb-legend { display: flex; gap: 14px; align-items: center; font: 11px var(--mono); padding: 2px 0 6px; }
+  #memPair .mb-legend .ln { display: inline-block; width: 18px; vertical-align: middle; margin-right: 4px; border-top: 2px solid var(--text); }
+  #memPair .mb-legend .ln.dashed { border-top-style: dashed; }
+  #memPair .mb-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 10px; max-height: 92px; }
+  #memPair .pl-lane { grid-column: 1 / -1; font-weight: bold; padding-top: 3px; border-top: 1px solid var(--border); }
+  #memPair .pl-item { white-space: nowrap; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,.04); }
   /* 对比界面字段面板：大组（数据段）→ 小组（二级段）→ 字段，三层缩进 */
   #memCmp .mb-fields { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; max-height: 196px; }
   #memCmp .mm-seg, #memCmp .mm-grp { display: flex; flex-direction: column; }
@@ -517,8 +537,14 @@
         <button data-type="tool">仅工具</button>
       </div>
       <button class="btn" id="memCmpBtn" title="跨路对比相同元数据：独立界面，横轴以各 run 开始时间为 t=0">元数据对比</button>
-      <button class="btn" id="memVmBtn" title="每沙箱明细（memlog 的 per_vm 段）：活跃沙箱数、单 VM 的 RSS/PSS/CPU/IO 曲线与生命周期">per-VM</button>
-      <button class="btn" id="memGuestBtn" title="guest 视角（guest.csv，注入 guest 读 /proc）：每条轨迹一条曲线，与 host 侧 per_vm 是两种独立采样">guest 视图</button>
+      <div class="per-host" id="perHost">
+        <button class="btn" id="perBtn" title="沙箱视角：宿主 fc（VMM 进程）、guest（注入 /proc）、同沙箱两侧对照">per ▾</button>
+        <div class="per-menu" id="perMenu">
+          <button data-per="fc" title="宿主 Firecracker 进程（VMM）视角，来自 memlog 的 per_vm 段">per-fc · 宿主</button>
+          <button data-per="guest" title="guest.csv，注入 guest 读 /proc 的视角">guest · 客户机</button>
+          <button data-per="pair" title="同一沙箱的 fc 与 guest 相同物理量画在一起，观察两者关系">对照 · fc↔guest</button>
+        </div>
+      </div>
       <button class="btn" id="autoLoadBtn" title="扫描当前根目录下所有 run，自动为每路加载轨迹 + host memlog + guest.csv，然后打开 guest 视图">整目录加载</button>
       <button class="btn" id="addLaneBtn" title="加入一路新的数据做对比">＋ 添加一路</button>
     </div>
@@ -3887,7 +3913,7 @@
   memVmEl.id = 'memVm';
   memVmEl.innerHTML =
     '<div class="mb-h">' +
-      '<b>per-VM 视图</b> <span class="dim" id="vmName"></span>' +
+      '<b>per-fc 视图</b> <span class="dim">宿主 Firecracker 进程 · memlog per_vm 段</span> <span class="dim" id="vmName"></span>' +
       '<span class="mb-read" id="vmRead"></span>' +
       '<select id="vmMetric" title="每沙箱曲线的指标">' +
         '<option value="rss">RSS MB</option><option value="pss">PSS MB</option>' +
@@ -3974,6 +4000,7 @@
     memVmEl.style.display = 'flex';
     memCmpEl.style.display = 'none';
     memBigEl.style.display = 'none';
+    if (memPairEl) memPairEl.style.display = 'none';
     await reloadMemVm();
   }
 
@@ -3983,7 +4010,7 @@
     const ls = memVmLanes();
     memVmEl.querySelector('#vmName').textContent =
       ls.map(({ l, i }) => laneLetter(i) + '·' + memCmpLabel(l)).join('   vs   ');
-    memVmEl.querySelector('#vmRead').textContent = '读取 per-VM 明细 …';
+    memVmEl.querySelector('#vmRead').textContent = '读取 per-fc 明细 …';
     const out = [];
     for (const { l } of ls) {
       const d = await loadLaneVm(l, vmMetric);
@@ -4394,10 +4421,27 @@
     }).join('');
   }
 
-  const memVmBtnEl = document.querySelector('#memVmBtn');
-  if (memVmBtnEl) memVmBtnEl.addEventListener('click', () => { openMemVm(); });
-  const memGuestBtnEl = document.querySelector('#memGuestBtn');
-  if (memGuestBtnEl) memGuestBtnEl.addEventListener('click', () => { openMemGuest(); });
+  // per 聚合入口：一个按钮展开 fc / guest / 对照三个子项
+  const perHostEl = document.querySelector('#perHost');
+  const perBtnEl = document.querySelector('#perBtn');
+  const perMenuEl = document.querySelector('#perMenu');
+  if (perBtnEl) perBtnEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    perHostEl.classList.toggle('open');
+  });
+  if (perMenuEl) perMenuEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-per]');
+    if (!b) return;
+    perHostEl.classList.remove('open');
+    const mode = b.dataset.per;
+    if (mode === 'fc') openMemVm();
+    else if (mode === 'guest') openMemGuest();
+    else if (mode === 'pair') openMemPair();
+  });
+  document.addEventListener('click', (e) => {
+    if (perHostEl && perHostEl.classList.contains('open') && !perHostEl.contains(e.target))
+      perHostEl.classList.remove('open');
+  });
   const autoLoadBtnEl = document.querySelector('#autoLoadBtn');
   if (autoLoadBtnEl) autoLoadBtnEl.addEventListener('click', () => { openModal(state.activeLane, 'all'); });
   memVmEl.querySelector('#vmClose').addEventListener('click', () => {
@@ -4489,6 +4533,7 @@
     memCmpEl.style.display = 'none';
     memBigEl.style.display = 'none';
     memVmEl.style.display = 'none';
+    if (memPairEl) memPairEl.style.display = 'none';
     await reloadMemGuest();
   }
 
@@ -4761,6 +4806,365 @@
     gsCursorX = null;
     if (gsRaf) { cancelAnimationFrame(gsRaf); gsRaf = 0; }
     drawMemGuest();
+  });
+
+  /* ── 对照视图：同一沙箱的 fc(宿主) 与 guest(客户机) 相同物理量画在一起 ──
+     两侧是独立采样：fc 来自 memlog per_vm（VMM 进程看到的东西），guest 来自
+     注入 guest 的 guest.csv（guest 自己看到的 /proc）。只把语义可比的量配成对，
+     且明确标注口径差异，不能混为一谈。
+     桥接键 = sample_idx：guest.csv 文件名 __sN 的 N、轨迹 ep.samp、fc 沙箱
+     经 vmBindTraj 配到的 ep.samp，三者都是同一样本号。 */
+  const PAIR_FIELDS = [
+    { key: 'anon', fc: 'anon', guest: 'anon_kb', label: '匿名页 MB',
+      note: 'fc=VMM 进程 smaps 匿名映射（guest RAM 主体）；guest=guest /proc 匿名页。两者应同量级，差异来自 VMM 自身开销与采样时刻错开。' },
+    { key: 'file', fc: 'file', guest: 'cached_kb', label: '文件页/页缓存 MB',
+      note: 'fc=VMM 进程文件映射页；guest=guest 页缓存。口径不同（进程映射 vs guest cache），只看趋势与相对关系。' },
+  ];
+  let pairKey = 'anon';
+  const pairCfg = () => PAIR_FIELDS.find(p => p.key === pairKey) || PAIR_FIELDS[0];
+  const memPairEl = document.createElement('div');
+  memPairEl.id = 'memPair';
+  memPairEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>对照视图</b> <span class="dim" id="pairName"></span>' +
+      '<span class="mb-read" id="pairRead"></span>' +
+      '<select id="pairField" title="选择两侧可比的同名物理量">' +
+        PAIR_FIELDS.map(p => '<option value="' + p.key + '">' + p.label + '</option>').join('') +
+      '</select>' +
+      '<button class="btn" id="pairReload">重读</button>' +
+      '<button class="btn" id="pairClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-note" id="pairNote"></div>' +
+    '<div class="mb-legend" id="pairLegend"></div>' +
+    '<div class="mb-body"><canvas id="pairCv"></canvas></div>' +
+    '<div class="mb-fields" id="pairList"></div>';
+  document.body.appendChild(memPairEl);
+  const pairCvEl = memPairEl.querySelector('#pairCv');
+  let pairCursorX = null;
+  let pairLayoutKey = '';
+  let pairRaf = 0;
+  let pairHit = [];
+  const pairLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.mem && x.l.guest);
+  const pairScale = (f) => f.endsWith('_kb') ? 1 / 1024 : 1; // guest KB → MB，与 fc 侧 MB 对齐
+
+  // 同一路里：fc 沙箱经 vmBind 配到 ep，guest traj 按 samp 找到同一条，凑成一对
+  async function ensurePairData(l, cfg) {
+    if (l.pairData && l.pairData.key === cfg.key) return l.pairData;
+    const d = await loadLaneVm(l, cfg.fc);
+    const g = await loadLaneGuest(l);
+    if (!d || !g) return null;
+    const r = run(l);
+    const eps = (r ? r.episodes : []).filter(e => e.start != null && e.end != null &&
+      e.end >= d.t0 && e.start <= d.t1).sort((a, b) => a.start - b.start).slice(0, 12);
+    const binds = vmBindTraj(eps, d.vms);
+    const pairs = [];
+    binds.forEach((b, k) => {
+      const gt = g.trajs.find(t => t.samp === b.ep.samp);
+      pairs.push({ ep: b.ep, vm: b.vm, gt, col: vmColOf(state.lanes.indexOf(l), k) });
+    });
+    l.pairData = { key: cfg.key, d, g, pairs,
+      fcPts: cfg.fc, guestField: cfg.guest };
+    return l.pairData;
+  }
+
+  async function openMemPair() {
+    memPairEl.style.display = 'flex';
+    memCmpEl.style.display = 'none';
+    memBigEl.style.display = 'none';
+    memVmEl.style.display = 'none';
+    memGuestEl.style.display = 'none';
+    await reloadMemPair();
+  }
+  function closeMemPair() { memPairEl.style.display = 'none'; pairCursorX = null; }
+
+  async function reloadMemPair() {
+    pairLayoutKey = '';
+    pairHit = [];
+    const cfg = pairCfg();
+    const ls = pairLanes();
+    memPairEl.querySelector('#pairName').textContent =
+      ls.map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l)).join('   vs   ');
+    memPairEl.querySelector('#pairRead').textContent = '读取 fc 与 guest 两侧 …';
+    memPairEl.querySelector('#pairNote').textContent = cfg.note;
+    memPairEl.querySelector('#pairLegend').innerHTML =
+      '<span><i class="ln solid"></i> fc 宿主</span><span><i class="ln dashed"></i> guest 客户机</span>' +
+      '<span class="dim">同色 = 同一沙箱/轨迹 · 纵轴统一 MB</span>';
+    const bad = [];
+    for (const { l, i } of ls) {
+      const pd = await ensurePairData(l, cfg);
+      if (!pd) bad.push(laneLetter(i) + '·' + gsLabel(l) + '：' + (l.vmErr || l.guestErr || '缺一侧数据'));
+    }
+    const ok = ls.filter(({ l }) => l.pairData && l.pairData.key === cfg.key);
+    const paired = ok.reduce((n, { l }) => n + l.pairData.pairs.filter(p => p.vm && p.gt).length, 0);
+    // fc 侧 anon/file 依赖采集端 smaps；部分 run 没开 smaps，这段全是 0，
+    // 画出来会是一条贴底线，明确提示而不是让人以为是「对齐得很好」。
+    const noSmaps = ok.filter(({ l }) => {
+      const has = l.pairData.pairs.some(p => p.vm && p.vm.peak > 0);
+      return !has;
+    }).map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l));
+    let msg = bad.length ? bad.join(' · ')
+      : (ok.length ? '配对 ' + paired + ' 个沙箱 · 实线 fc / 虚线 guest · 游标处同点对照两侧值'
+                   : '先把某路同时挂上 memlog 与 guest.csv');
+    if (noSmaps.length && !bad.length)
+      msg += ' · ⚠ ' + noSmaps.join('/') + ' 的 fc 侧 smaps 为空（' + cfg.label + ' 全 0，仅 guest 侧有效）';
+    memPairEl.querySelector('#pairRead').textContent = msg;
+    renderPairList();
+    drawMemPair();
+  }
+
+  function renderPairList() {
+    const cfg = pairCfg();
+    const ls = pairLanes();
+    const parts = [];
+    for (const { l, i } of ls) {
+      const pd = l.pairData && l.pairData.key === cfg.key ? l.pairData : null;
+      const head = laneLetter(i) + '·' + gsLabel(l);
+      if (!pd || !pd.pairs.length) { parts.push(head + '：无配对'); continue; }
+      const rows = pd.pairs.map(p => {
+        const fcV = p.vm ? l.pairData.d.vms.find(v => v.sid === p.vm.sid) : null;
+        const vmPeak = p.vm ? p.vm.peak : 0;
+        const gSer = p.gt ? (p.gt.series[cfg.guest] || []) : [];
+        const gPeak = gSer.reduce((m, q) => Math.max(m, q[1] * pairScale(cfg.guest)), 0);
+        return '<span class="pl-item" style="color:' + p.col + '">' +
+          's' + p.ep.samp + '·' + (p.vm ? esc(p.vm.label) : '?') +
+          ' fc' + fmtMem(vmPeak) + ' g' + fmtMem(gPeak) +
+          (p.gt ? '' : ' (无csv)') + '</span>';
+      });
+      parts.push('<span class="pl-lane">' + esc(head) + '</span>' + rows.join(''));
+    }
+    memPairEl.querySelector('#pairList').innerHTML = parts.join('');
+  }
+
+  function drawMemPair() {
+    if (memPairEl.style.display === 'none') return;
+    const cfg = pairCfg();
+    const ls = pairLanes().filter(({ l }) => l.pairData && l.pairData.key === cfg.key);
+    const body = memPairEl.querySelector('.mb-body');
+    const W = body.clientWidth;
+    const ctx = pairCvEl.getContext('2d');
+    const axisH = 26;
+    const rowH = 20;
+    const rows = ls.reduce((a, { l }) => a + 18 + Math.max(1, l.pairData.pairs.length) * rowH + 8, 4);
+    const mainH = Math.max(170, Math.min(760, (body.clientHeight || 600) - rows - axisH));
+    const H = Math.max(220, mainH + rows + axisH);
+    const lk = [W, body.clientHeight, window.devicePixelRatio, cfg.key,
+      ls.map(({ l }) => l.pairData.d.t1 + '|' + l.pairData.g.t1).join('~')].join('|');
+    if (lk !== pairLayoutKey) { prepCv(pairCvEl, ctx, W, H); pairLayoutKey = lk; }
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!ls.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      ctx.fillText('先把某路同时挂上 memlog 与 guest.csv（整目录加载会自动挂上）', 20, 30);
+      return;
+    }
+    const durMax = Math.max(...ls.map(({ l }) => memCmpDur(l)));
+    const x0 = 190, x1 = W - 58;
+    const xx = (rel) => x0 + rel / durMax * (x1 - x0);
+    const y0 = 0, y1 = mainH;
+    // 两侧都换算成 MB 后取统一刻度
+    const sc = pairScale(cfg.guest);
+    let vMax = 0;
+    for (const { l } of ls) for (const p of l.pairData.pairs) {
+      if (p.vm) for (const [, v] of p.vm.pts) if (v > vMax) vMax = v;
+      if (p.gt) for (const [, v] of (p.gt.series[cfg.guest] || [])) if (v * sc > vMax) vMax = v * sc;
+    }
+    const tick = niceTicks(vMax || 1, 3);
+    const vy = (val) => y1 - 10 - (val / tick.top) * (mainH - 26);
+    ctx.fillStyle = C.bandBg;
+    ctx.fillRect(x0, y0, x1 - x0, mainH);
+    ctx.font = '10px Consolas, monospace';
+    for (const tv of tick.ticks) {
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(x0, vy(tv), x1 - x0, 1);
+      ctx.fillStyle = C.dim;
+      ctx.textAlign = 'left';
+      ctx.fillText(fmtMem(tv), x1 + 4, vy(tv) + 3);
+    }
+    ctx.textAlign = 'right';
+    ctx.fillStyle = C.text;
+    ctx.fillText(cfg.label + '  MB', x0 - 8, y0 + 14);
+
+    pairHit = [];
+    const tags = [];
+    for (const { l, i } of ls) {
+      const anch = memCmpAnchor(l);
+      for (const p of l.pairData.pairs) {
+        // fc 实线：vm.pts 已是 MB（后端按 metric 换算）
+        if (p.vm && p.vm.pts.length) {
+          ctx.beginPath();
+          let st = false;
+          for (const [ts, v] of p.vm.pts) {
+            const rel = ts - anch;
+            if (rel < 0 || rel > durMax) continue;
+            const px = xx(rel), py = vy(v);
+            if (!st) { ctx.moveTo(px, py); st = true; } else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = p.col;
+          ctx.lineWidth = 1.8;
+          ctx.setLineDash([]);
+          ctx.stroke();
+        }
+        // guest 虚线：series KB → MB
+        if (p.gt) {
+          const ser = p.gt.series[cfg.guest] || [];
+          ctx.beginPath();
+          let st = false;
+          for (const [ts, v] of ser) {
+            const rel = ts - anch;
+            if (rel < 0 || rel > durMax) continue;
+            const px = xx(rel), py = vy(v * sc);
+            if (!st) { ctx.moveTo(px, py); st = true; } else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = p.col;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 3]);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+    }
+
+    // 游标：同一沙箱的两条线各打一点，标 fc / guest 值与差
+    if (pairCursorX != null && pairCursorX >= x0 && pairCursorX <= x1) {
+      const rel = (pairCursorX - x0) / (x1 - x0) * durMax;
+      const boxes = [];
+      const hits = (b) => boxes.some(o =>
+        !(b[0] > o[0] + o[2] || b[0] + b[2] < o[0] || b[1] > o[1] + o[3] || b[1] + b[3] < o[1]));
+      ctx.strokeStyle = C.dim;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pairCursorX, y0);
+      ctx.lineTo(pairCursorX, y1 + rows + axisH);
+      ctx.stroke();
+      for (const { l, i } of ls) {
+        const anch = memCmpAnchor(l);
+        for (const p of l.pairData.pairs) {
+          const near = (pts, scale) => {
+            let best = null, bd = Infinity;
+            for (const q of pts) { const dd = Math.abs(q[0] - (anch + rel)); if (dd < bd) { bd = dd; best = q; } }
+            return bd < durMax * 0.06 + 3000 ? best : null;
+          };
+          const fpt = p.vm ? near(p.vm.pts, 1) : null;
+          const gpt = p.gt ? near(p.gt.series[cfg.guest] || [], sc) : null;
+          if (!fpt && !gpt) continue;
+          if (fpt) {
+            const px = xx(fpt[0] - anch), py = vy(fpt[1]);
+            ctx.fillStyle = p.col;
+            ctx.beginPath(); ctx.arc(px, py, 3.4, 0, 6.2832); ctx.fill();
+            tags.push({ txt: (ls.length > 1 ? laneLetter(i) + '·' : '') + p.ep.label + ' fc ' + fmtMem(fpt[1]), col: p.col, px, py });
+          }
+          if (gpt) {
+            const gv = gpt[1] * sc;
+            const px = xx(gpt[0] - anch), py = vy(gv);
+            ctx.fillStyle = C.bg;
+            ctx.strokeStyle = p.col;
+            ctx.lineWidth = 1.6;
+            ctx.beginPath(); ctx.arc(px, py, 3.4, 0, 6.2832); ctx.fill(); ctx.stroke();
+            tags.push({ txt: (ls.length > 1 ? laneLetter(i) + '·' : '') + p.ep.label + ' guest ' + fmtMem(gv), col: p.col, px, py });
+          }
+        }
+      }
+      tags.forEach((t) => {
+        ctx.font = '10px Consolas, monospace';
+        const tw = ctx.measureText(t.txt).width;
+        let lx = null, ly = null;
+        for (const dy of [3, -9, 14, -20, 25, -31]) {
+          for (const side of [1, -1]) {
+            const ax = side > 0 ? t.px + 7 : t.px - 7 - tw;
+            const ay = t.py + dy;
+            if (ax < x0 + 2 || ax + tw > x1 - 2 || ay < y0 + 9 || ay > y1 - 1) continue;
+            if (hits([ax - 2, ay - 9, tw + 4, 11])) continue;
+            lx = ax; ly = ay; break;
+          }
+          if (lx != null) break;
+        }
+        if (lx == null) return;
+        boxes.push([lx - 2, ly - 9, tw + 4, 11]);
+        ctx.fillStyle = C.bg;
+        ctx.fillRect(lx - 3, ly - 10, tw + 6, 13);
+        ctx.fillStyle = lighten(t.col, 0.35);
+        ctx.textAlign = 'left';
+        ctx.fillText(t.txt, lx, ly);
+      });
+    }
+
+    // 底部：每条轨迹一行，标沙箱名，工具段亮色
+    let gy = y1 + 4;
+    for (const { l, i } of ls) {
+      const anch = memCmpAnchor(l);
+      const col0 = MC_COLORS[i % MC_COLORS.length];
+      ctx.textAlign = 'right';
+      ctx.fillStyle = col0;
+      ctx.font = '10px Consolas, monospace';
+      ctx.fillText(laneLetter(i) + ' pair', x0 - 8, gy + 9);
+      l.pairData.pairs.forEach((p, k) => {
+        const rowY = gy + 12 + k * rowH;
+        ctx.textAlign = 'right';
+        ctx.font = '10px Consolas, monospace';
+        ctx.fillStyle = p.col;
+        ctx.fillText(p.ep.label + (p.vm ? ' ' + p.vm.label : ''), x0 - 8, rowY + 8);
+        const sRel = Math.max(0, p.ep.start - anch), eRel = Math.min(durMax, p.ep.end - anch);
+        const px0 = xx(sRel), px1 = Math.max(px0 + 2, xx(eRel));
+        pairHit.push({ k: k, x0: px0, x1: px1, y0: rowY, y1: rowY + 10, p, l });
+        ctx.fillStyle = p.col + '22';
+        ctx.fillRect(px0, rowY, px1 - px0, 10);
+        ctx.strokeStyle = p.col + '99';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px0 + 0.5, rowY + 0.5, px1 - px0 - 1, 9);
+        for (const sp of (p.ep.spans || [])) {
+          if (sp.t !== 'tool') continue;
+          const ss = Math.max(0, sp.s - anch), ee = Math.min(durMax, sp.e - anch);
+          if (ee < 0 || ss > durMax) continue;
+          const a = xx(ss), b = Math.max(a + 1, xx(ee));
+          ctx.fillStyle = '#ffb84d';
+          ctx.fillRect(a, rowY + 1, b - a, 8);
+        }
+      });
+      gy += 12 + Math.max(1, l.pairData.pairs.length) * rowH + 8;
+    }
+
+    const rel0 = pairCursorX != null && pairCursorX >= x0 && pairCursorX <= x1
+      ? (pairCursorX - x0) / (x1 - x0) * durMax : null;
+    const noSmaps = ls.filter(({ l }) => !l.pairData.pairs.some(p => p.vm && p.vm.peak > 0))
+      .map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l));
+    const warn = noSmaps.length ? ' · ⚠ ' + noSmaps.join('/') + ' 的 fc smaps 为空（' + cfg.label + ' 全 0）' : '';
+    memPairEl.querySelector('#pairRead').textContent = (rel0 == null
+      ? (badText(pairLanes()) || '鼠标移入画布，同一沙箱 fc（实线）与 guest（虚线）在游标处对照读数')
+      : 't+' + fmtDur(rel0 / 1000) + ' · 实线 fc / 空心 guest · 同色同一沙箱') + warn;
+  }
+  function badText(ls) {
+    const bad = ls.map(({ l, i }) => (l.vmErr || l.guestErr)
+      ? laneLetter(i) + '·' + gsLabel(l) + '：' + (l.vmErr || l.guestErr) : '').filter(Boolean);
+    return bad.join(' · ');
+  }
+
+  memPairEl.querySelector('#pairField').addEventListener('change', (e) => {
+    pairKey = e.target.value;
+    pairCursorX = null;
+    reloadMemPair();
+  });
+  memPairEl.querySelector('#pairReload').addEventListener('click', () => {
+    pairLanes().forEach(({ l }) => { l.pairData = null; });
+    reloadMemPair();
+  });
+  memPairEl.querySelector('#pairClose').addEventListener('click', closeMemPair);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memPairEl.style.display !== 'none') {
+      e.stopPropagation();
+      closeMemPair();
+    }
+  }, true);
+  pairCvEl.addEventListener('mousemove', (e) => {
+    const r = pairCvEl.getBoundingClientRect();
+    pairCursorX = e.clientX - r.left;
+    if (pairRaf) return;
+    pairRaf = requestAnimationFrame(() => { pairRaf = 0; drawMemPair(); });
+  });
+  pairCvEl.addEventListener('mouseleave', () => {
+    pairCursorX = null;
+    if (pairRaf) { cancelAnimationFrame(pairRaf); pairRaf = 0; }
+    drawMemPair();
   });
 
   /* 整目录一键加载：扫描当前根目录下所有 run，每路配一条 lane，自动挂
@@ -5716,6 +6120,18 @@
     })),
     memBigConcRef: () => memBigConc,
     openMemGuest, reloadMemGuest, loadLaneGuest, gsGuestLanes,
+    openMemPair, reloadMemPair, drawMemPair, pairLanes,
+    pairSetField: (k) => { pairKey = k; return reloadMemPair(); },
+    pairKeyRef: () => pairKey,
+    pairView: () => pairLanes().map(({ l, i }) => ({
+      lane: i, label: gsLabel(l), key: l.pairData && l.pairData.key,
+      pairs: (l.pairData && l.pairData.key === pairKey ? l.pairData.pairs : []).map(p => ({
+        ep: p.ep.id, samp: p.ep.samp, vm: p.vm ? p.vm.label : null,
+        guest: !!p.gt, col: p.col,
+        fcPeak: p.vm ? p.vm.peak : 0,
+        gPeak: p.gt ? Math.max(0, ...(p.gt.series[pairCfg().guest] || []).map(q => q[1] * pairScale(pairCfg().guest))) : 0,
+      }))
+    })),
     autoLoadAll, gsSetField: (f) => { gsField = f; return reloadMemGuest(); },
     gsFieldRef: () => gsField,
     gsView: () => gsGuestLanes().map(({ l, i }) => ({
