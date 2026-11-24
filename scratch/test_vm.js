@@ -12,6 +12,7 @@ const R2 = ROOT + '\\webdev-plumbing-g4';
 const M1 = R1 + '\\host\\memlog.jsonl';
 const M2 = R2 + '\\host\\memlog.jsonl';
 const SWE = 'C:\\Users\\MECHREVO\\Desktop\\develop_sandox\\display\\mimo-swe-12\\traj';
+const REP = 'C:\\Users\\MECHREVO\\Desktop\\develop_sandox\\display\\swe12-replay-1-20261116\\swe12-replay-1';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 if (fs.existsSync(PROF)) fs.rmSync(PROF, { recursive: true, force: true });
 const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=1',
@@ -185,6 +186,85 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollb
     sg.click(); return document.querySelector('#gcReadout').textContent.slice(-160); })()`);
   console.log('tokReadout ' + JSON.stringify(readout));
   await shot(path.join(__dirname, 'shot_tok.png'));
+
+  // 再加一路回放数据：录制/回放同轨迹 token 数只差几十，ttft 差很多，
+  // 正好用来验证「忽略首 token 等待」后两路柱子能不能对齐
+  await ev(`(async () => {
+    const j = await (await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: ${JSON.stringify(REP)} }) })).json();
+    const lane = scopeDebug.addLane(null);
+    scopeDebug.applyPayload(lane, j);
+    lane.cmpRun = '*';
+    scopeDebug.renderCmp();
+    return j.runs.length;
+  })()`);
+  await sleep(900);
+  // 「忽略首 token 等待」：同 token 跨 run 应等高（gen = 完成 token ÷ tok/s）
+  const tps = await ev('scopeDebug.state.cmpTps');
+  const segExpr = `(() => [...document.querySelectorAll('#cmpChart .sg.g')]
+    .filter(el => (el.dataset.row || '').includes('000122'))
+    .map(el => ({ row: el.dataset.row, col: el.dataset.col, g: +el.dataset.g,
+      ct: +el.dataset.ct, ttft: +el.dataset.ttft, n: +el.dataset.n })))()`;
+  const segBefore = await ev(segExpr);
+  await ev(`(() => { const el = document.querySelector('#cmpNoTtft');
+    el.checked = true; el.dispatchEvent(new Event('change')); return true; })()`);
+  await sleep(700);
+  const segAfter = await ev(segExpr);
+  const noSt = await ev(`(() => ({ tok: scopeDebug.state.cmpTok, off: scopeDebug.state.cmpNoTtft,
+    tokChecked: document.querySelector('#cmpTok').checked,
+    offChecked: document.querySelector('#cmpNoTtft').checked,
+    offDisabled: document.querySelector('#cmpNoTtft').disabled,
+    saved: (() => { const k = Object.keys(localStorage).find(x => (localStorage.getItem(x) || '').includes('cmpNoTtft'));
+      return k ? JSON.parse(localStorage.getItem(k)).cmpNoTtft : null; })(),
+    hint: document.querySelector('#cmpHint').textContent.slice(0, 160) }))()`);
+  console.log('noTtftSegs ' + JSON.stringify({ before: segBefore.slice(0, 8), after: segAfter.slice(0, 8) }));
+  console.log('noTtftState ' + JSON.stringify(noSt));
+  if (!noSt.tok || !noSt.off || !noSt.tokChecked || !noSt.offChecked || noSt.offDisabled || noSt.saved !== true)
+    throw new Error('忽略首 token 等待开关状态不对：' + JSON.stringify(noSt));
+  if (!noSt.hint.includes('忽略首 token 等待')) throw new Error('提示行没写重算口径：' + noSt.hint);
+  if (!segBefore.length || segBefore.length !== segAfter.length) throw new Error('000122 柱段数量异常');
+  let maxGapBefore = 0, maxGapAfter = 0, groupN = 0;
+  const byRow = new Map();
+  segBefore.forEach((s, i) => {
+    if (Math.abs(s.g - (s.ct / tps + s.ttft)) > 0.6)
+      throw new Error('开「忽略」前不是 ttft + token 口径：' + JSON.stringify(s));
+    const a = segAfter[i];
+    if (Math.abs(a.g - s.ct / tps) > 0.6)
+      throw new Error('忽略后 gen 不等于 token ÷ 吞吐：' + JSON.stringify(a));
+    if (Math.abs(s.g - a.g - s.ttft) > 0.6)
+      throw new Error('忽略后没扣掉首 token 等待：' + JSON.stringify({ s, a }));
+    const g = byRow.get(s.row) || []; g.push([s.g, a.g]); byRow.set(s.row, g);
+  });
+  for (const [, arr] of byRow) {
+    if (arr.length < 2) continue;
+    groupN++;
+    maxGapBefore = Math.max(maxGapBefore, Math.max(...arr.map(x => x[0])) - Math.min(...arr.map(x => x[0])));
+    maxGapAfter = Math.max(maxGapAfter, Math.max(...arr.map(x => x[1])) - Math.min(...arr.map(x => x[1])));
+  }
+  console.log('noTtftAlign ' + JSON.stringify({ groupN, maxGapBefore, maxGapAfter }));
+  if (!groupN || maxGapBefore <= 5 || maxGapAfter >= 2)
+    throw new Error('同 token 跨 run 没有对齐：' + JSON.stringify({ groupN, maxGapBefore, maxGapAfter }));
+  const noRead = await ev(`(() => { const sg = [...document.querySelectorAll('#cmpChart .sg.g')]
+    .find(el => (el.dataset.row || '').includes('000122'));
+    if (!sg) return 'no-seg'; sg.click();
+    return document.querySelector('#gcReadout').textContent.slice(-180); })()`);
+  console.log('noTtftReadout ' + JSON.stringify(noRead));
+  if (!noRead.includes('未计首 token 等待')) throw new Error('读数没说明忽略 ttft：' + noRead);
+  await shot(path.join(__dirname, 'shot_tok_nottft.png'));
+  // 反向联动：取消重算会清掉忽略开关；只勾忽略开关会自动打开重算
+  const link = await ev(`(() => {
+    const t = document.querySelector('#cmpTok'), n = document.querySelector('#cmpNoTtft');
+    t.checked = false; t.dispatchEvent(new Event('change'));
+    const a = { tok: scopeDebug.state.cmpTok, off: scopeDebug.state.cmpNoTtft, disabled: n.disabled };
+    n.checked = true; n.dispatchEvent(new Event('change'));
+    return { a, b: { tok: scopeDebug.state.cmpTok, off: scopeDebug.state.cmpNoTtft,
+      tokChecked: t.checked, disabled: n.disabled } }; })()`);
+  console.log('noTtftLink ' + JSON.stringify(link));
+  if (link.a.tok || link.a.off || !link.a.disabled) throw new Error('取消重算没清掉忽略开关');
+  if (!link.b.tok || !link.b.off || !link.b.tokChecked || link.b.disabled)
+    throw new Error('只勾忽略开关没自动打开重算');
+  await ev(`(() => { const t = document.querySelector('#cmpTok'); t.checked = false;
+    t.dispatchEvent(new Event('change')); return true; })()`);
 
   const errs = await ev(`window.__errs || []`);
   console.log('runtime errors: ' + JSON.stringify(errs));

@@ -545,6 +545,7 @@
     <label class="cmp-chk" id="cmpTokLbl" title="推理耗时按 token 重算：gen = 首 token 等待 + 完成 token ÷ 吞吐。录制轨迹是真推理实测（逐步记了 token 与 ttft），回放不起模型、直接 sleep 录制时的每步延迟，所以两路 gen 天生相同；换模型 / 换硬件比时才需要用这个口径重算"><input type="checkbox" id="cmpTok"> 推理按 token 重算</label>
     <input id="cmpTps" type="number" min="1" max="4000" step="1" value="110" title="解码吞吐（token/s），开启「推理按 token 重算」后生效">
     <span class="cmp-lbl">tok/s</span>
+    <label class="cmp-chk" id="cmpNoTtftLbl" title="同 token 跨 run 对齐：推理 gen = 完成 token ÷ 吞吐，不计首 token 等待。录制路 ttft 是逐步实测，回放路固定 0.3s/步，把它算进去会让同样 token 的柱子高低不同。勾选会自动打开「推理按 token 重算」"><input type="checkbox" id="cmpNoTtft"> 忽略首 token 等待</label>
     <div class="seg" id="cmpViewSeg" title="图=分组堆叠柱（纵轴绝对时间，同轨迹各 run 并排，基线最左，run 按总并发升序）；表=per-traj 宽表">
       <button data-cv="chart">分组图</button>
       <button data-cv="table">宽表</button>
@@ -786,6 +787,7 @@
     cmpBaseUser: false,  // 用户是否手动选过基线；没选过就别让存下来的旧索引挡住「录制路优先」
     cmpTok: false,       // 推理耗时按 token 重算（换模型/换硬件比时用；默认关）
     cmpTps: 110,         // 重算用的解码吞吐（token/s）
+    cmpNoTtft: false,    // 重算时不计首 token 等待：gen = completion_tokens ÷ tok/s，同 token 跨 run 完全对齐
     sort: 'group',
     spanFilter: 'all',
     search: '',
@@ -2470,21 +2472,30 @@
   $('#cmpSearch').addEventListener('input', () => renderCmp());
   $('#cmpFirst').addEventListener('change', () => { renderCmp(); saveSetup(); });
   const tokTpsEl = $('#cmpTps');
-  const syncTokTps = () => {
+  const noTtftEl = $('#cmpNoTtft');
+  // from='noTtft' 时勾选本身就代表要用 token 口径，顺手打开重算；
+  // from='tok' 取消重算时把「忽略首 token 等待」一起清掉，免得状态自相矛盾
+  const syncTokTps = (from) => {
+    if (from === 'noTtft' && noTtftEl.checked) $('#cmpTok').checked = true;
+    if (from === 'tok' && !$('#cmpTok').checked) noTtftEl.checked = false;
     state.cmpTok = $('#cmpTok').checked;
+    state.cmpNoTtft = noTtftEl.checked && state.cmpTok;
     state.cmpTps = Math.max(1, Math.min(4000, +tokTpsEl.value || 110));
+    noTtftEl.checked = state.cmpNoTtft;
+    noTtftEl.disabled = !state.cmpTok;
     tokTpsEl.disabled = !state.cmpTok;
     renderCmp(); saveSetup();
   };
-  if ($('#cmpTok')) $('#cmpTok').addEventListener('change', syncTokTps);
-  if (tokTpsEl) tokTpsEl.addEventListener('change', syncTokTps);
+  if ($('#cmpTok')) $('#cmpTok').addEventListener('change', () => syncTokTps('tok'));
+  if (noTtftEl) noTtftEl.addEventListener('change', () => syncTokTps('noTtft'));
+  if (tokTpsEl) tokTpsEl.addEventListener('change', () => syncTokTps('tps'));
   $('#cmpSplit').addEventListener('change', () => { state.cmpSplit = $('#cmpSplit').checked; renderCmp(); saveSetup(); });
   $('#cmpChart').addEventListener('click', (e) => {
     const sg = e.target.closest('.sg');
     if (!sg) return;
     const d = sg.dataset;
     state.cmpSel = { row: d.row, col: d.col, kind: d.k, g: d.g, t: d.t, n: d.n, pk: d.pk, to: d.to, tos: d.tos,
-      ct: d.ct, tps: d.tps, graw: d.graw };
+      ct: d.ct, tps: d.tps, graw: d.graw, ttft: d.ttft };
     const box = $('#cmpChart');
     box.querySelectorAll('.sg').forEach(s => s.classList.remove('sel'));
     sg.classList.add('sel');
@@ -4487,7 +4498,8 @@
     const nTo = +sel.to || 0;
     const tokTxt = (+sel.ct > 0)
       ? ' · ' + fmtTok(+sel.ct) + ' token' + (sel.tps ? '（实测 ' + sel.tps + ' tok/s）' : '') +
-        (state.cmpTok ? ' · 按 ' + state.cmpTps + ' tok/s 重算推理 ' + fmtDur(g) + '（原 ' + fmtDur(+sel.graw || 0) + '）' : '')
+        (state.cmpTok ? ' · 按 ' + state.cmpTps + ' tok/s 重算推理 ' + fmtDur(g) + '（原 ' + fmtDur(+sel.graw || 0) + '）' +
+          (state.cmpNoTtft ? ' · 未计首 token 等待 ' + fmtDur(+sel.ttft || 0) : '') : '')
       : '';
     return (sel.row || '') + ' · ' + (sel.col || '') + ' · ' +
       (sel.kind === 'g' ? '▸' : '') + '推理 ' + fmtDur(g) + ' (' + pc(g) + ') · ' +
@@ -4524,9 +4536,10 @@
       const c = bar.cells.get(key);
       if (!c || !c.n) return null;
       // 推理段：默认用实测 gen（回放是录制延迟的复读）；开启 token 口径后
-      // 按 ttft + 完成token ÷ 吞吐 重算，各柱的推理段才能跨模型/跨硬件比较
+      // 按 ttft + 完成token ÷ 吞吐 重算；再勾「忽略首 token 等待」就只剩
+      // 完成token ÷ 吞吐，同样 token 的轨迹无论哪条 run 都等高
       const g = (state.cmpTok && c.ct > 0)
-        ? (c.ttft + c.ct / Math.max(1, state.cmpTps)) / c.n
+        ? ((state.cmpNoTtft ? 0 : c.ttft) + c.ct / Math.max(1, state.cmpTps)) / c.n
         : c.g / c.n;
       return { g, t: c.t / c.n, w: c.w / c.n, n: c.n, to: c.to / c.n, tos: c.tos / c.n,
         ct: (c.ct || 0) / c.n, pt: (c.pt || 0) / c.n, ttft: (c.ttft || 0) / c.n,
@@ -4566,7 +4579,8 @@
         const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
         const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
           '" data-g="' + v.g.toFixed(1) + '" data-graw="' + v.gRaw.toFixed(1) +
-          '" data-ct="' + Math.round(v.ct) + '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
+          '" data-ct="' + Math.round(v.ct) + '" data-ttft="' + v.ttft.toFixed(1) +
+          '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
           '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
           '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
           '" data-tos="' + v.tos.toFixed(1) + '"';
@@ -4640,7 +4654,8 @@
           const pG = v.g / tot * 100, pT = tn / tot * 100, pO = tmo / tot * 100;
           const attrs = ' data-row="' + esc(r.label) + '" data-col="' + esc(b.name) +
             '" data-g="' + v.g.toFixed(1) + '" data-graw="' + v.gRaw.toFixed(1) +
-            '" data-ct="' + Math.round(v.ct) + '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
+            '" data-ct="' + Math.round(v.ct) + '" data-ttft="' + v.ttft.toFixed(1) +
+          '" data-tps="' + (v.tps ? v.tps.toFixed(1) : '') +
             '" data-t="' + v.t.toFixed(1) + '" data-n="' + v.n +
             '" data-pk="' + b.peak + '" data-to="' + (v.to % 1 ? v.to.toFixed(1) : v.to) +
             '" data-tos="' + v.tos.toFixed(1) + '"';
@@ -4756,6 +4771,8 @@
       $('#cmpTok').checked = state.cmpTok;
       tokTpsEl.value = state.cmpTps;
       tokTpsEl.disabled = !state.cmpTok;
+      noTtftEl.checked = state.cmpNoTtft;
+      noTtftEl.disabled = !state.cmpTok;
     }
     if (!cols.length) {
       $('#cmpCols').innerHTML = ''; $('#cmpBase').innerHTML = '';
@@ -4813,7 +4830,8 @@
         : ' · 基线 = ' + baseCol.name + '（未找到录制数据）');
     $('#cmpHint').textContent = state.cmpView === 'chart'
       ? '构建 ' + BUILD + ' · 红段 = 命令卡满超时上限' +
-        (state.cmpTok ? ' · 推理按 ' + state.cmpTps + ' tok/s 重算' : '') + baseNote
+        (state.cmpTok ? ' · 推理按 ' + state.cmpTps + ' tok/s 重算' +
+          (state.cmpNoTtft ? '（忽略首 token 等待，同 token 对齐）' : '') : '') + baseNote
       : vis.length + '/' + rows.length + ' 条轨迹 · 倍数 = 单次s ÷ 基线(' +
         baseCol.name + ') · ≥299s 超时剔除 · 构建 ' + BUILD;
     const foot = cols.map((c, ci) => {
@@ -5026,6 +5044,7 @@
         cmpSplit: state.cmpSplit,
         cmpTok: state.cmpTok,
         cmpTps: state.cmpTps,
+        cmpNoTtft: state.cmpNoTtft,
         firstOnly: $('#cmpFirst').checked,
       }));
     } catch (e) { /* 忽略 */ }
@@ -5082,6 +5101,7 @@
     state.cmpSplit = !!spec.cmpSplit;
     if (typeof spec.cmpTok === 'boolean') state.cmpTok = spec.cmpTok;
     if (+spec.cmpTps > 0) state.cmpTps = +spec.cmpTps;
+    state.cmpNoTtft = state.cmpTok && spec.cmpNoTtft === true;
     if (typeof spec.firstOnly === 'boolean') $('#cmpFirst').checked = spec.firstOnly;
     state.activeLane = Math.min(Math.max(0, +spec.activeLane || 0), state.lanes.length - 1);
     fitView();
