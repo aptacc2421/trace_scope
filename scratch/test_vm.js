@@ -105,6 +105,24 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollb
       list: document.querySelector('#vmList').textContent.slice(0, 160) };
   })()`);
   console.log('vm ' + JSON.stringify(vmInfo));
+  // 每沙箱一色：同路内不重复，两路之间不撞色
+  const vmCols = await ev(`(() => {
+    const d = window.__vmDots || [];
+    const by = { 0: [], 1: [] }, cnt = { 0: 0, 1: 0 };
+    d.forEach(x => {
+      if (!by[x.lane]) return;
+      cnt[x.lane]++;
+      if (!by[x.lane].includes(x.col)) by[x.lane].push(x.col);
+    });
+    return { n: d.length, c0: by[0], c1: by[1], n0: cnt[0], n1: cnt[1],
+      hover: !!(window.__vmCursor && window.__vmCursor.hover) };
+  })()`);
+  console.log('vmCols ' + JSON.stringify(vmCols));
+  if (vmCols.c0.length < 2) throw new Error('第 0 路只有 ' + vmCols.c0.length + ' 种曲线颜色');
+  if (vmCols.hover) throw new Error('默认状态不应该算悬停');
+  // 同一路内部每条曲线必须不同色；跨路重色是允许的（第二路改虚线区分）
+  if (vmCols.c0.length !== vmCols.n0) throw new Error('第 0 路曲线重色：' + vmCols.n0 + ' 条只有 ' + vmCols.c0.length + ' 色');
+  if (vmCols.c1.length !== vmCols.n1) throw new Error('第 1 路曲线重色：' + vmCols.n1 + ' 条只有 ' + vmCols.c1.length + ' 色');
   await shot(path.join(__dirname, 'shot_vm.png'));
 
   // 切指标

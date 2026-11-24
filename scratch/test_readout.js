@@ -54,17 +54,31 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollb
   console.log('mbRead ' + JSON.stringify(hover));
   await shot('shot_membig_conc.png');
 
-  // B. per-VM：曲线直标
+  // B. per-VM：游标处打点 + 就近标注，每条曲线一色
   await ev('scopeDebug.openMemVm(); true');
-  await waitFor('!!(scopeDebug.state.lanes[0].vmCache && window.__vmTags)', 120000, 'vm');
+  await waitFor('!!(scopeDebug.state.lanes[0].vmCache && window.__vmDots)', 120000, 'vm');
   await sleep(400);
-  const tags = await ev('window.__vmTags || []');
-  console.log('vmTags ' + JSON.stringify({ n: tags.length, top: tags.slice(0, 6) }));
+  const dots0 = await ev(`(() => { const d = window.__vmDots || [];
+    return { n: d.length, cols: [...new Set(d.map(x => x.col))].length,
+      cur: window.__vmCursor, hint: document.querySelector('#vmRead').textContent.slice(0, 80),
+      top: d.slice(0, 6) }; })()`);
+  console.log('vmDots ' + JSON.stringify(dots0));
+  if (!dots0.n) throw new Error('默认游标处没有打点');
+  if (dots0.cols !== dots0.n) throw new Error('曲线颜色重复：' + dots0.n + ' 个点只有 ' + dots0.cols + ' 种颜色');
+  if (dots0.cur.hover) throw new Error('默认状态不应该算悬停');
+  await shot('shot_vm_default.png');
   const vhover = await ev(`(() => { const c = document.querySelector('#vmCv'); const r = c.getBoundingClientRect();
     c.dispatchEvent(new MouseEvent('mousemove', { clientX: r.left + r.width * 0.62, clientY: r.top + 200, bubbles: true }));
-    return document.querySelector('#vmRead').textContent.slice(0, 220); })()`);
-  console.log('vmRead ' + JSON.stringify(vhover));
+    return { read: document.querySelector('#vmRead').textContent.slice(0, 220),
+      n: (window.__vmDots || []).length, cur: window.__vmCursor }; })()`);
+  console.log('vmHover ' + JSON.stringify(vhover));
+  if (!vhover.cur.hover) throw new Error('悬停后 __vmCursor.hover 仍为 false');
   await shot('shot_vm_tags.png');
+  const vleft = await ev(`(() => { const c = document.querySelector('#vmCv');
+    c.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    return { hint: document.querySelector('#vmRead').textContent.slice(0, 80), cur: window.__vmCursor }; })()`);
+  console.log('vmLeave ' + JSON.stringify(vleft));
+  if (vleft.cur.hover) throw new Error('移出后游标没有回到默认位置');
 
   const errs = await ev('window.__errs || []');
   console.log('runtime errors: ' + JSON.stringify(errs));
