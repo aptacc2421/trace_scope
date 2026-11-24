@@ -4795,33 +4795,27 @@
     let payload;
     try { payload = await doScan(root); }
     catch (e) { alert('扫描失败: ' + e); return; }
-    // 扫到单个 run 且它名字就是末级目录名 → 当前指向的是单个 run 目录，不是整目录。
-    // 上跳一层再扫（服务根是数据集目录时，父层才有全部 run）。
-    const leaf = root.replace(/[\\\/]+$/, '').split(/[\\\/]/).filter(Boolean).pop();
-    const isSingleRunDir = payload && !payload.error && payload.runs && payload.runs.length === 1
-      && payload.runs[0].id === leaf;
-    if (isSingleRunDir) {
-      const parent = root.replace(/[\\\/]+$/, '').replace(/[\\\/][^\\\/]+$/, '');
-      if (parent && parent !== root) {
-        try {
-          const pp = await doScan(parent);
-          if (pp && !pp.error && pp.runs && pp.runs.length > payload.runs.length) {
-            root = parent; payload = pp;
-          }
-        } catch (e) { /* 父层扫不动就维持原来的单 run */ }
-      }
-    }
+    // 目录由用户在弹窗里自选：扫到什么就加载什么，绝不自动上跳父目录。
+    // 旧版在「只扫到一个 run 且 id 等于末级目录名」时会上跳，把父目录下所有 run
+    // 一并加载——这与自选目录的语义冲突（选了某个 run 却加载了整个数据集）。
     if (!payload || payload.error || !payload.runs || !payload.runs.length) {
       alert('这个目录下没扫到 run'); return;
     }
+    const leaf = root.replace(/[\\\/]+$/, '').split(/[\\\/]/).filter(Boolean).pop();
     const runs = payload.runs;
+    // 先裁掉多余的旧 lane：否则从整目录（14 路）切到单个 run 时，
+    // 其余 lane 仍挂着上一次的 run，界面上看起来像「把父目录的也加载了」。
+    while (state.lanes.length > runs.length) removeLane(state.lanes.length - 1);
     while (state.lanes.length < runs.length) addLane(null);
     const sep = root.includes('/') ? '/' : '\\';
     const base = root.replace(/[\\\/]+$/, '');
     for (let i = 0; i < runs.length; i++) {
       const r = runs[i];
       const lane = state.lanes[i];
-      applyPayload(lane, { root: base + sep + r.id, lazy: true, runs: [r] });
+      // 选中目录本身就是 run 时，discover 把 id 设为末级目录名；此时 run 路径就是
+      // root 本身，不再拼一次 id，否则会变成 <root>\<leaf> 的重复路径。
+      const runDir = (runs.length === 1 && r.id === leaf) ? base : (base + sep + r.id);
+      applyPayload(lane, { root: runDir, lazy: true, runs: [r] });
       lane.guestCache = null; lane.guestErr = '';
       lane.vmCache = null; lane.vmErr = '';
       const a = r.assets || {};
@@ -4831,7 +4825,7 @@
       // guest：用 assets 里的 csv 路径挂一个轻量描述，loadLaneGuest 再按它取数
       const gf = a.guest || [];
       if (gf.length) {
-        lane.guest = { path: base + sep + r.id, files: gf.map(x => ({ path: x.path })) };
+        lane.guest = { path: runDir, files: gf.map(x => ({ path: x.path })) };
       } else {
         lane.guest = null;
       }
