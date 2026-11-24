@@ -21,7 +21,8 @@ import scope_data
 HERE = Path(__file__).parent
 FRONTEND = HERE / "frontend"
 CACHE: dict[str, dict] = {}  # key -> {"_sig", "_json": 概要层字节, "_src": {run_id: {ep_id: src}}, "_span": {ep_id: spans} 按需}
-CURRENT_ROOT: list = [None]  # 最近一次扫描的目录
+CURRENT_ROOT: list = [None]  # 最近一次扫描的目录（会被每次 /api/scan 改写）
+BOOT_ROOT: list = [None]     # 服务启动时预扫描的目录，全程不变：整目录加载的稳定回退值
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -293,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/ping":
                 self._json({"ok": True})
             elif u.path == "/api/status":
-                self._json({"root": CURRENT_ROOT[0]})
+                self._json({"root": CURRENT_ROOT[0], "boot_root": BOOT_ROOT[0]})
             elif u.path == "/api/ls":
                 self._json(list_dirs(q.get("path", "")))
             elif u.path == "/api/scan":
@@ -372,6 +373,7 @@ def main():
         try:
             payload = json.loads(scan_json(args.runs_dir))
             n = sum(len(r["episodes"]) for r in payload["runs"])
+            BOOT_ROOT[0] = payload["root"]
             print(f"预扫描 {payload['root']}: {len(payload['runs'])} runs / {n} episodes")
         except ValueError as e:
             print(f"预扫描失败: {e}")

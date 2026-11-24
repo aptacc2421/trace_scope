@@ -4750,17 +4750,50 @@
      轨迹（applyPayload）、host memlog 与 guest.csv，然后打开 guest 视图。
      兼容两种布局：memlog 在 run 根 / host/ / measure/ 子目录，guest 在 run 根 / records/。 */
   async function autoLoadAll(pathArg) {
-    const root = (pathArg || $('#rootPath').textContent || '').trim();
-    if (!root || root.startsWith('加载')) { alert('请先打开一个数据目录'); return; }
-    const ep = '/api/scan';
-    let payload;
+    // 路径来源按可靠度排序：显式参数 > 当前已打开目录 > 服务启动时的扫描根。
+    // 页面若靠 restoreSetup 恢复了上次配置，rootPath 可能还停在「未打开数据」占位，
+    // 这时必须回退到服务根，否则拿占位字符串去扫必然「没扫到 run」。
+    let root = (pathArg || '').trim();
+    if (!root) {
+      const rp = ($('#rootPath').textContent || '').trim();
+      if (rp && !rp.startsWith('加载') && rp !== '未打开数据' && !rp.startsWith('无数据')) root = rp;
+    }
+    // 服务根要分清两个：boot_root 是启动时定的整目录（稳定），root 会被任意一次
+    // scan 改写（可能停在某个单 run）。整目录加载优先认 boot_root。
+    let bootRoot = '';
     try {
+      const st = await (await fetch('/api/status')).json();
+      bootRoot = (st.boot_root || '').trim();
+      if (!root) root = bootRoot || (st.root || '').trim();
+    } catch (e) { /* 无服务时下面统一提示 */ }
+    if (!root) { alert('请先打开一个数据目录'); return; }
+    const ep = '/api/scan';
+    const doScan = async (p) => {
       const res = await fetch(ep, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: root, refresh: false }),
+        body: JSON.stringify({ path: p, refresh: false }),
       });
-      payload = await res.json();
-    } catch (e) { alert('扫描失败: ' + e); return; }
+      return res.json();
+    };
+    let payload;
+    try { payload = await doScan(root); }
+    catch (e) { alert('扫描失败: ' + e); return; }
+    // 扫到单个 run 且它名字就是末级目录名 → 当前指向的是单个 run 目录，不是整目录。
+    // 上跳一层再扫（服务根是数据集目录时，父层才有全部 run）。
+    const leaf = root.replace(/[\\\/]+$/, '').split(/[\\\/]/).filter(Boolean).pop();
+    const isSingleRunDir = payload && !payload.error && payload.runs && payload.runs.length === 1
+      && payload.runs[0].id === leaf;
+    if (isSingleRunDir) {
+      const parent = root.replace(/[\\\/]+$/, '').replace(/[\\\/][^\\\/]+$/, '');
+      if (parent && parent !== root) {
+        try {
+          const pp = await doScan(parent);
+          if (pp && !pp.error && pp.runs && pp.runs.length > payload.runs.length) {
+            root = parent; payload = pp;
+          }
+        } catch (e) { /* 父层扫不动就维持原来的单 run */ }
+      }
+    }
     if (!payload || payload.error || !payload.runs || !payload.runs.length) {
       alert('这个目录下没扫到 run'); return;
     }
