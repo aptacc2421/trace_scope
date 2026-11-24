@@ -4815,12 +4815,14 @@
      桥接键 = sample_idx：guest.csv 文件名 __sN 的 N、轨迹 ep.samp、fc 沙箱
      经 vmBindTraj 配到的 ep.samp，三者都是同一样本号。 */
   const PAIR_FIELDS = [
+    { key: 'rss', fc: 'rss', guest: 'used_kb', label: '常驻/已用 MB',
+      note: 'fc=VMM 进程 RSS（statm 常驻集，guest RAM 主体，不依赖 smaps）；guest=total−avail（guest 视角已用内存）。两者同量级，差异来自 VMM 自身开销与采样时刻错开。' },
     { key: 'anon', fc: 'anon', guest: 'anon_kb', label: '匿名页 MB',
-      note: 'fc=VMM 进程 smaps 匿名映射（guest RAM 主体）；guest=guest /proc 匿名页。两者应同量级，差异来自 VMM 自身开销与采样时刻错开。' },
+      note: 'fc=VMM 进程 smaps 匿名映射（guest RAM 主体）；guest=guest /proc 匿名页。两者应同量级。注意：fc 侧依赖采集端开启 smaps，部分 run 全 0。' },
     { key: 'file', fc: 'file', guest: 'cached_kb', label: '文件页/页缓存 MB',
-      note: 'fc=VMM 进程文件映射页；guest=guest 页缓存。口径不同（进程映射 vs guest cache），只看趋势与相对关系。' },
+      note: 'fc=VMM 进程文件映射页；guest=guest 页缓存。口径不同（进程映射 vs guest cache），只看趋势与相对关系。部分 run 的 fc 侧 smaps 为空。' },
   ];
-  let pairKey = 'anon';
+  let pairKey = 'rss';
   const pairCfg = () => PAIR_FIELDS.find(p => p.key === pairKey) || PAIR_FIELDS[0];
   const memPairEl = document.createElement('div');
   memPairEl.id = 'memPair';
@@ -4841,9 +4843,11 @@
   document.body.appendChild(memPairEl);
   const pairCvEl = memPairEl.querySelector('#pairCv');
   let pairCursorX = null;
+  let pairCursorY = null;
   let pairLayoutKey = '';
   let pairRaf = 0;
   let pairHit = [];
+  let pairHoverTool = null;
   const pairLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.mem && x.l.guest);
   const pairScale = (f) => f.endsWith('_kb') ? 1 / 1024 : 1; // guest KB → MB，与 fc 侧 MB 对齐
 
@@ -4853,6 +4857,15 @@
     const d = await loadLaneVm(l, cfg.fc);
     const g = await loadLaneGuest(l);
     if (!d || !g) return null;
+    // guest.csv 没有「已用」列，按时间戳把 total−avail 派生出来，与 fc RSS 对照。
+    // 派生结果挂回 guestCache，与 fc 曲线共用同一时间轴。
+    if (cfg.guest === 'used_kb') for (const t of g.trajs) {
+      if (t.series.used_kb) continue;
+      const tot = t.series.total_kb || [], av = t.series.avail_kb || [];
+      const avMap = new Map(av.map(([ts, v]) => [ts, v]));
+      t.series.used_kb = tot.map(([ts, v]) =>
+        [ts, Math.max(0, v - (avMap.has(ts) ? avMap.get(ts) : 0))]);
+    }
     const r = run(l);
     const eps = (r ? r.episodes : []).filter(e => e.start != null && e.end != null &&
       e.end >= d.t0 && e.start <= d.t1).sort((a, b) => a.start - b.start).slice(0, 12);
@@ -4875,11 +4888,12 @@
     memGuestEl.style.display = 'none';
     await reloadMemPair();
   }
-  function closeMemPair() { memPairEl.style.display = 'none'; pairCursorX = null; }
+  function closeMemPair() { memPairEl.style.display = 'none'; pairCursorX = null; pairHoverTool = null; }
 
   async function reloadMemPair() {
     pairLayoutKey = '';
     pairHit = [];
+    pairHoverTool = null;
     const cfg = pairCfg();
     const ls = pairLanes();
     memPairEl.querySelector('#pairName').textContent =
@@ -4903,7 +4917,7 @@
       return !has;
     }).map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l));
     let msg = bad.length ? bad.join(' · ')
-      : (ok.length ? '配对 ' + paired + ' 个沙箱 · 实线 fc / 虚线 guest · 游标处同点对照两侧值'
+      : (ok.length ? '配对 ' + paired + ' 个沙箱 · 实线=fc 宿主 / 虚线=guest 客户机 · 游标处同点对照两侧值'
                    : '先把某路同时挂上 memlog 与 guest.csv');
     if (noSmaps.length && !bad.length)
       msg += ' · ⚠ ' + noSmaps.join('/') + ' 的 fc 侧 smaps 为空（' + cfg.label + ' 全 0，仅 guest 侧有效）';
@@ -5119,6 +5133,10 @@
           const a = xx(ss), b = Math.max(a + 1, xx(ee));
           ctx.fillStyle = '#ffb84d';
           ctx.fillRect(a, rowY + 1, b - a, 8);
+          // clientX 取整，命中框也取整，1px 宽的短工具段才点得到（与 per-fc 面板同口径）
+          pairHit.push({ lane: i, ep: p.ep, sp, p,
+            x0: Math.round(a), x1: Math.round(Math.max(a + 1, b)),
+            y0: rowY + 1, y1: rowY + 9 });
         }
       });
       gy += 12 + Math.max(1, l.pairData.pairs.length) * rowH + 8;
@@ -5129,9 +5147,34 @@
     const noSmaps = ls.filter(({ l }) => !l.pairData.pairs.some(p => p.vm && p.vm.peak > 0))
       .map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l));
     const warn = noSmaps.length ? ' · ⚠ ' + noSmaps.join('/') + ' 的 fc smaps 为空（' + cfg.label + ' 全 0）' : '';
+    const toolTip = pairHoverTool
+      ? ' · 工具 s' + (pairHoverTool.ep.samp == null ? '?' : pairHoverTool.ep.samp) +
+        ' step' + (pairHoverTool.sp.i == null ? '?' : pairHoverTool.sp.i) +
+        ' ' + String(pairHoverTool.sp.cmd || '').replace(/\s+/g, ' ').slice(0, 80) +
+        ' · ' + ((pairHoverTool.sp.e - pairHoverTool.sp.s) / 1000).toFixed(2) + 's'
+      : '';
     memPairEl.querySelector('#pairRead').textContent = (rel0 == null
       ? (badText(pairLanes()) || '鼠标移入画布，同一沙箱 fc（实线）与 guest（虚线）在游标处对照读数')
-      : 't+' + fmtDur(rel0 / 1000) + ' · 实线 fc / 空心 guest · 同色同一沙箱') + warn;
+      : 't+' + fmtDur(rel0 / 1000) + ' · 实线=fc 宿主 / 虚线=guest 客户机 · 同色同一沙箱') + warn + toolTip;
+    // 工具段 hover 提示框（画在最上层，与 per-fc 面板同口径）
+    if (pairHoverTool && pairCursorX != null) {
+      const h = pairHoverTool;
+      const txt = 's' + (h.ep.samp == null ? '?' : h.ep.samp) + ' step' + (h.sp.i == null ? '?' : h.sp.i) +
+        ' · ' + String(h.sp.cmd || h.sp.t).replace(/\s+/g, ' ').slice(0, 100) +
+        ' · ' + ((h.sp.e - h.sp.s) / 1000).toFixed(2) + 's · exit ' + (h.sp.exit == null ? '-' : h.sp.exit);
+      ctx.font = '10px Consolas, monospace';
+      const tw = ctx.measureText(txt).width;
+      const bx = Math.max(x0 + 2, Math.min(pairCursorX + 8, x1 - tw - 8));
+      const by = Math.max(y0 + 12, Math.min(h.y1 + 16, y1 - 2));
+      ctx.fillStyle = '#000000dd';
+      ctx.fillRect(bx - 4, by - 12, tw + 8, 16);
+      ctx.strokeStyle = C.gutterLine;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 4.5, by - 12.5, tw + 9, 17);
+      ctx.fillStyle = '#ffd08a';
+      ctx.textAlign = 'left';
+      ctx.fillText(txt, bx, by);
+    }
   }
   function badText(ls) {
     const bad = ls.map(({ l, i }) => (l.vmErr || l.guestErr)
@@ -5158,11 +5201,17 @@
   pairCvEl.addEventListener('mousemove', (e) => {
     const r = pairCvEl.getBoundingClientRect();
     pairCursorX = e.clientX - r.left;
+    pairCursorY = e.clientY - r.top;
+    // 工具段命中优先于整行命中：pairHit 里工具段有 sp 字段
+    pairHoverTool = pairHit.find(h => h.sp && pairCursorX >= h.x0 && pairCursorX <= h.x1 &&
+      pairCursorY >= h.y0 && pairCursorY <= h.y1) || null;
     if (pairRaf) return;
     pairRaf = requestAnimationFrame(() => { pairRaf = 0; drawMemPair(); });
   });
   pairCvEl.addEventListener('mouseleave', () => {
     pairCursorX = null;
+    pairCursorY = null;
+    pairHoverTool = null;
     if (pairRaf) { cancelAnimationFrame(pairRaf); pairRaf = 0; }
     drawMemPair();
   });
@@ -6123,6 +6172,9 @@
     openMemPair, reloadMemPair, drawMemPair, pairLanes,
     pairSetField: (k) => { pairKey = k; return reloadMemPair(); },
     pairKeyRef: () => pairKey,
+    pairHits: () => pairHit.filter(h => h.sp).map(h => ({ lane: h.lane, samp: h.ep.samp,
+      step: h.sp.i, cmd: String(h.sp.cmd || ''), x0: h.x0, x1: h.x1, y0: h.y0, y1: h.y1 })),
+    pairHoverRef: () => pairHoverTool,
     pairView: () => pairLanes().map(({ l, i }) => ({
       lane: i, label: gsLabel(l), key: l.pairData && l.pairData.key,
       pairs: (l.pairData && l.pairData.key === pairKey ? l.pairData.pairs : []).map(p => ({
