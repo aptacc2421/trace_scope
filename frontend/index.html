@@ -159,10 +159,11 @@
     background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
   #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; }
+  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
   #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body { flex: 1; min-height: 0; }
   #memCmp .mb-body { overflow-y: auto; }
   #memVm .mb-body { overflow-y: auto; }
+  #memVm .mb-body canvas { display: block; }
   #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
   /* 对比界面字段面板：大组（数据段）→ 小组（二级段）→ 字段，三层缩进 */
   #memCmp .mb-fields { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 0; max-height: 196px; }
@@ -3875,6 +3876,7 @@
         '<option value="cpu">CPU %</option><option value="io_r">读 MB/s</option>' +
         '<option value="io_w">写 MB/s</option><option value="threads">线程数</option>' +
       '</select>' +
+      '<label class="cmp-chk" id="vmShowAllLbl" title="默认只画与当前轨迹按结束时刻配对的沙箱，一条轨迹一条曲线、颜色一致；勾选后把未配对的沙箱也用灰线画出来"><input type="checkbox" id="vmShowAll"> 全部沙箱</label>' +
       '<button class="btn" id="vmReload">重读</button>' +
       '<button class="btn" id="vmClose">关闭（Esc）</button>' +
     '</div>' +
@@ -3885,10 +3887,47 @@
   const VM_UNIT = { rss: 'MB', pss: 'MB', anon: 'MB', file: 'MB', cpu: '%', io_r: 'MB/s', io_w: 'MB/s', threads: '个' };
   let vmMetric = 'rss';
   let vmCursorX = null;
+  let vmLayoutKey = '';
+  const vmLabelPos = new Map();
+  let vmRaf = 0;
+  let vmHoverTraj = null;
+  let vmTrajHit = [];
+  let vmLastMove = null;
+  let vmShowAll = false;
 
   const memVmLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.mem);
 
-  const VM_HINT = '活跃=该路同时存在的沙箱数（RSS≥64MB 才算真启动）· 游标处每条曲线打点并标名字与值 · 甘特条与曲线同色';
+  /* 轨迹的 sandbox 字段是 agentenv 的 sandbox_id（UUIDv7），memlog 里只有
+     Firecracker 的 api_sock，两边没有落盘映射。但轨迹 finished_at 与沙箱
+     memlog 最后一条采样的时刻秒级吻合（4/4 run 验证，plumbing 那批有固定
+     11~14s 的采样间隔偏移），所以用「结束时刻最近、容差 30s」做一对一配对：
+     一条轨迹锁一个沙箱，配过的沙箱不再参与，避免多条轨迹抢同一个。
+     配对不上就返回 null，由调用方退回按时间对齐，不硬凑。 */
+  const VM_BIND_TOL_MS = 30000;
+  function vmBindTraj(eps, vms) {
+    const live = vms.filter(v => v.live);
+    const used = new Set();
+    const out = [];
+    for (const ep of eps) {
+      let best = null, bestD = VM_BIND_TOL_MS;
+      for (const v of live) {
+        if (used.has(v.sid)) continue;
+        const d = Math.abs(v.t1 - ep.end);
+        if (d < bestD) { bestD = d; best = v; }
+      }
+      if (best) { used.add(best.sid); out.push({ ep, vm: best, delta: bestD }); }
+      else out.push({ ep, vm: null, delta: null });
+    }
+    return out;
+  }
+  // 配对表：sid → 轨迹下标；同 lane 内一条沙箱只属于一条轨迹
+  const vmSidTraj = (binds) => {
+    const m = new Map();
+    binds.forEach((b, k) => { if (b.vm) m.set(b.vm.sid, k); });
+    return m;
+  };
+
+  const VM_HINT = '活跃=该路同时存在的沙箱数（RSS≥64MB 才算真启动）· 沙箱总数是整场 run 累计进程数 · 轨迹与沙箱按结束时刻配对并同色（亮块=工具，暗块=推理），未配对的沙箱开「全部沙箱」才画 · 游标处每条曲线打点标值';
   const vmHintText = () => {
     const bad = memVmLanes().map(({ l }) => l.vmErr).filter(Boolean);
     return bad.length ? bad.join(' · ') : VM_HINT;
@@ -3920,6 +3959,8 @@
   }
 
   async function reloadMemVm() {
+    vmLabelPos.clear();
+    vmLayoutKey = '';
     const ls = memVmLanes();
     memVmEl.querySelector('#vmName').textContent =
       ls.map(({ l, i }) => laneLetter(i) + '·' + memCmpLabel(l)).join('   vs   ');
@@ -3928,6 +3969,28 @@
     for (const { l } of ls) {
       const d = await loadLaneVm(l, vmMetric);
       out.push(d);
+      l.vmTraj = null;
+      l.vmBind = [];
+      l.vmSidTraj = new Map();
+      l.vmTrajErr = '';
+      if (!d) continue;
+      try {
+        const r = run(l);
+        // 按 memlog 时间窗挑轨迹，最多 12 条：底部只承担对齐读数，不铺满整场
+        const eps = (r ? r.episodes : []).filter(e => e.start != null && e.end != null &&
+          e.end >= d.t0 && e.start <= d.t1).sort((a, b) => a.start - b.start).slice(0, 12);
+        if (eps.length) {
+          const j = await fetchSpans(l, { eps: eps.map(e => e.id).join(',') });
+          l.vmTraj = { eps, spans: j.spans || {} };
+          l.vmBind = vmBindTraj(eps, d.vms);
+          l.vmSidTraj = vmSidTraj(l.vmBind);
+        } else {
+          l.vmBind = [];
+          l.vmSidTraj = new Map();
+        }
+      } catch (e) {
+        l.vmTrajErr = String(e && e.message || e);
+      }
     }
     // 有一路没有 per_vm 段时给出具体原因，而不是画一张空图
     const bad = ls.filter(({ l }) => !l.vmCache).map(({ l, i }) =>
@@ -3945,19 +4008,25 @@
     const ctx = vmCvEl.getContext('2d');
     const axisH = 26;
     const bandH = ls.length * 30 + 8;
-    const GANTT_MAX = 20;
-    // 甘特块从 y0+mainH+4 起画，这里把 4px 起始间距一起算进来，H 才不会差几像素
-    const ganttRows = ls.reduce((a, { l }) => {
-      const live = l.vmCache.data.vms.filter(v => v.live).length;
-      if (!live) return a + 22;
-      const shown = Math.min(live, GANTT_MAX);
-      return a + 14 + shown * 6 + (live > shown ? 18 : 0) + 6;
+    const TRAJ_MAX = 12;
+    // 轨迹区从 y0+mainH+4 起画，把 4px 起始间距算进来，H 才不会差几像素
+    const trajRows = ls.reduce((a, { l }) => {
+      const n = l.vmTraj ? Math.min(l.vmTraj.eps.length, TRAJ_MAX) : 0;
+      return a + 18 + (n || 1) * 18 + 8;
     }, 4);
     // 主图吃掉剩余高度：窗口越大曲线越高，别把空间留给空白
     const mainH = Math.max(170, Math.min(900,
-      (body.clientHeight || 600) - bandH - ganttRows - axisH));
-    const H = Math.max(220, bandH + mainH + ganttRows + axisH);
-    prepCv(vmCvEl, ctx, W, H);
+      (body.clientHeight || 600) - bandH - trajRows - axisH));
+    const H = Math.max(220, bandH + mainH + trajRows + axisH);
+    // 游标移动只重画内容，不再反复改画布尺寸：尺寸变化会牵动滚动条与 flex 高度，
+    // 表现为鼠标一动整张图跟着抖。
+    const layoutKey = [W, body.clientHeight, window.devicePixelRatio, vmMetric,
+      ls.map(({ l }) => l.vmCache.data.t1 + '@' +
+        (l.vmTraj ? l.vmTraj.eps.map(e => e.id).join(';') : '')).join('|')].join('|');
+    if (layoutKey !== vmLayoutKey) {
+      prepCv(vmCvEl, ctx, W, H);
+      vmLayoutKey = layoutKey;
+    }
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
     if (!ls.length) {
@@ -3985,7 +4054,7 @@
       const yy = (v) => base - v / peakN * 16;
       ctx.textAlign = 'right';
       ctx.fillStyle = col;
-      ctx.fillText(laneLetter(i) + ' 活跃 ' + (d.peak.n || 0) + ' / 共 ' + d.n_vm, x0 - 8, bandY + 16);
+      ctx.fillText(laneLetter(i) + ' 活跃 ' + (d.peak.n || 0) + ' / 累计 ' + d.n_vm, x0 - 8, bandY + 16);
       const pts = d.agg.n_live || [];
       if (!pts.length) return;
       const anch = memCmpAnchor(l);
@@ -4023,14 +4092,34 @@
     ctx.textAlign = 'right';
     ctx.fillStyle = C.text;
     ctx.fillText('每沙箱 ' + vmMetric.toUpperCase() + '  ' + unit, x0 - 8, y0 + 14);
-    // 每条 lane 取峰值前 12 个沙箱，颜色按峰值排序固定分配：
-    // 曲线、甘特、游标三处共用同一张 sid→颜色表，换个视图也能对上同一条沙箱
+    /* 曲线：优先画与轨迹配对上的沙箱，颜色 = 那条轨迹的颜色（vmColOf(i, 轨迹下标)），
+       这样底部轨迹行、上方曲线、游标打点三处同色，一眼看出是哪条轨迹在动哪个沙箱。
+       没配上的沙箱默认不画（避免“按理说只有 4 个却画了一堆”），开「全部沙箱」才以
+       灰色补画。完全没有轨迹数据时退回旧口径：峰值前 12 个、按峰值排序上色。 */
     const picks = ls.map(({ l, i }) => {
-      const list = l.vmCache.data.vms.filter(v => v.live)
-        .sort((a, b) => b.peak - a.peak).slice(0, 12);
+      const live = l.vmCache.data.vms.filter(v => v.live);
       const colOf = new Map();
-      list.forEach((v, k) => colOf.set(v.sid, vmColOf(i, k)));
-      return { l, i, anch: memCmpAnchor(l), list, colOf };
+      const trajCol = new Map();
+      const bind = l.vmBind || [];
+      const paired = bind.filter(b => b.vm);
+      let list;
+      if (paired.length) {
+        list = paired.map(b => b.vm);
+        paired.forEach((b, k) => {
+          const col = vmColOf(i, k);
+          colOf.set(b.vm.sid, col);
+          trajCol.set(b.ep.id, col);
+        });
+        if (vmShowAll) {
+          const usedSid = new Set(paired.map(b => b.vm.sid));
+          live.filter(v => !usedSid.has(v.sid)).forEach(v => colOf.set(v.sid, C.dim));
+          list = list.concat(live.filter(v => !usedSid.has(v.sid)));
+        }
+      } else {
+        list = live.sort((a, b) => b.peak - a.peak).slice(0, 12);
+        list.forEach((v, k) => colOf.set(v.sid, vmColOf(i, k)));
+      }
+      return { l, i, anch: memCmpAnchor(l), list, colOf, trajCol, paired };
     });
     for (const p of picks) {
       for (const v of p.list) {
@@ -4038,8 +4127,8 @@
         ctx.strokeStyle = col;
         ctx.globalAlpha = 0.92;
         ctx.lineWidth = 1.3;
-        // 第二路起用虚线：两路颜色撞了也能分清是哪一份 memlog
-        ctx.setLineDash(p.i > 0 ? [5, 3] : []);
+        // 每沙箱一色，两路用不同色段；不再用虚线，单路打开时不再全是虚线
+        ctx.setLineDash([]);
         ctx.beginPath();
         let started = false, last = null;
         for (const [t, val] of v.pts) {
@@ -4063,74 +4152,81 @@
       }
     }
 
-    /* C. 每沙箱生命周期：一条横条 = 从第一次出现在采样里到最后一次。
-          沙箱数可达几十个，逐条写标签会糊成一片：只给寿命最长的 3 条标名字，
-          其余靠底部摘要和曲线段本身看节奏。 */
+    /* C. 轨迹时间轴：替掉原来的沙箱寿命甘特，在同一横轴上画每条轨迹的 gen/tool。
+       per_vm 的 api_sock 与轨迹里的 sandbox UUID 没有落盘映射，所以按绝对时间对齐：
+       鼠标停在工具段上，上方游标同步挪到该时刻，各沙箱曲线的值就是当时的读数。 */
     let gy = y0 + mainH + 4;
     const dbgRows = [];
-    for (const { l, i, anch, colOf } of picks) {
-      const d = l.vmCache.data;
+    vmTrajHit = [];
+    for (const { l, i, anch, trajCol } of picks) {
       const laneCol = MC_COLORS[i % MC_COLORS.length];
+      ctx.font = '10px Consolas, monospace';
       ctx.textAlign = 'right';
       ctx.fillStyle = laneCol;
-      ctx.fillText(laneLetter(i) + ' 沙箱寿命', x0 - 8, gy + 9);
-      const live = d.vms.filter(v => v.live).sort((a, b) => a.t0 - b.t0);
-      if (!live.length) {
+      ctx.fillText(laneLetter(i) + ' 轨迹', x0 - 8, gy + 10);
+      const tr = l.vmTraj;
+      const eps = tr ? tr.eps.slice().sort((a, b) => a.start - b.start).slice(0, TRAJ_MAX) : [];
+      if (!eps.length) {
         ctx.textAlign = 'left';
         ctx.fillStyle = C.dim;
-        ctx.fillText('（没有 RSS≥64MB 的沙箱，只有 ' + d.n_vm + ' 个残留进程）', x0 + 6, gy + 9);
-        gy += 22;
+        ctx.fillText(l.vmTrajErr || '（该时间窗没有轨迹，或 spans 未加载）', x0 + 6, gy + 10);
+        gy += 18 + 18 + 8;
+        dbgRows.push({ lane: i, eps: 0, gy, anch });
         continue;
       }
-      const shown = live.slice(0, GANTT_MAX);
-      shown.forEach((v, k) => {
-        const s = Math.max(0, v.t0 - anch), e = Math.min(durMax, v.t1 - anch);
-        const px0 = xx(s), px1 = Math.max(px0 + 2, xx(e));
-        const rowY = gy + 6 + k * 6;
-        // 条子跟曲线同色，才能在两张图之间对上同一个沙箱；
-        // 没进前 12（曲线上没画）的用 lane 色再淡一档，标出「只在这里出现」
-        const hit = colOf.has(v.sid);
-        const col = hit ? colOf.get(v.sid) : laneCol;
-        ctx.fillStyle = col + (hit ? '66' : '33');
-        ctx.fillRect(px0, rowY, px1 - px0, 4);
-        ctx.fillStyle = col;
-        ctx.fillRect(px0, rowY, Math.min(2, px1 - px0), 4);
-      });
-      // 行距只有 6px，9px 字号的标签标在相邻行上会糊成一片：
-      // 按寿命从长到短挑，且与已挑中的行至少隔 2 行
-      const tagRows = [];
-      shown.map((v, k) => ({ v, k }))
-        .sort((a, b) => (b.v.t1 - b.v.t0) - (a.v.t1 - a.v.t0))
-        .forEach(({ v, k }) => {
-          if (tagRows.length >= 3) return;
-          if (tagRows.some(r => Math.abs(r.k - k) < 2)) return;
-          tagRows.push({ v, k });
-        });
-      tagRows.forEach(({ v, k }) => {
-        const s = Math.max(0, v.t0 - anch), e = Math.min(durMax, v.t1 - anch);
-        const px1 = Math.max(xx(s) + 2, xx(e));
-        const rowY = gy + 6 + k * 6;
-        const txt = v.label + ' 峰' + fmtMem(v.peak) + unit;
+      eps.forEach((ep, row) => {
+        const rowY = gy + 16 + row * 18;
+        // 配对上的轨迹用沙箱同色；没配上的退回 lane 色，并在行尾标「未配对」
+        const tCol = trajCol.get(ep.id) || laneCol;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = tCol;
+        ctx.fillText('s' + (ep.samp == null ? '?' : ep.samp), x0 - 8, rowY + 8);
+        const sRel = Math.max(0, ep.start - anch), eRel = Math.min(durMax, ep.end - anch);
+        const px0 = xx(sRel), px1 = Math.max(px0 + 2, xx(eRel));
+        ctx.fillStyle = tCol + '22';
+        ctx.fillRect(px0, rowY, px1 - px0, 10);
+        ctx.strokeStyle = tCol + '88';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px0 + 0.5, rowY + 0.5, px1 - px0 - 1, 9);
+        for (const sp of (tr.spans[ep.id] || [])) {
+          const ss = Math.max(0, sp.s - anch), ee = Math.min(durMax, sp.e - anch);
+          if (ee < 0 || ss > durMax) continue;
+          const a = xx(ss), b = Math.max(a + 1, xx(ee));
+          const isTool = sp.t === 'tool';
+          ctx.fillStyle = isTool ? tCol : tCol + '55';
+          ctx.fillRect(a, rowY + (isTool ? 1 : 4), b - a, isTool ? 8 : 3);
+          // 鼠标事件的 clientX 是整数：命中框也取整，1px 宽的短工具段才点得到
+          if (isTool) vmTrajHit.push({ lane: i, ep, sp,
+            x0: Math.round(a), x1: Math.round(Math.max(a + 1, b)), y0: rowY, y1: rowY + 10 });
+        }
+        const bind = (l.vmBind || []).find(b => b.ep.id === ep.id);
+        const tag = (bind && bind.vm ? bind.vm.label : '未配对') + ' · ' + (ep.stop || '').slice(0, 10);
         ctx.font = '9px Consolas, monospace';
-        const tw = ctx.measureText(txt).width;
-        // 右侧 x1 以外是纵轴刻度列，条子贴到边界时标签往里翻，别盖住刻度数字
-        const lx = px1 + 5 + tw > x1 - 3 ? Math.max(x0 + 2, px1 - tw - 5) : px1 + 5;
         ctx.textAlign = 'left';
-        // 行距只有 6px，9px 的字必然压到上下相邻的条子：铺一块底色把条子盖掉再写字
-        ctx.fillStyle = C.bg;
-        ctx.fillRect(lx - 2, rowY - 4, tw + 4, 11);
-        ctx.fillStyle = lighten(colOf.get(v.sid) || laneCol, 0.35);
-        ctx.fillText(txt, lx, rowY + 4);
+        ctx.fillStyle = bind && bind.vm ? tCol : C.dim;
+        ctx.fillText(tag, Math.min(x1 - 118, px1 + 5), rowY + 8);
         ctx.font = '10px Consolas, monospace';
       });
-      if (live.length > shown.length) {
-        ctx.textAlign = 'left';
-        ctx.fillStyle = C.dim;
-        ctx.fillText('＋' + (live.length - shown.length) + ' 个更短的沙箱未画', x0 + 6,
-          gy + 6 + shown.length * 6 + 10);
-      }
-      gy += 14 + shown.length * 6 + (live.length > shown.length ? 18 : 0) + 6;
-      dbgRows.push({ lane: i, live: live.length, shown: shown.length, gy, anch });
+      gy += 16 + eps.length * 18 + 8;
+      dbgRows.push({ lane: i, eps: eps.length, gy, anch });
+    }
+    if (vmHoverTraj) {
+      const h = vmHoverTraj;
+      const txt = 's' + (h.ep.samp == null ? '?' : h.ep.samp) + ' step' + (h.sp.i == null ? '?' : h.sp.i) +
+        ' · ' + String(h.sp.cmd || h.sp.t).replace(/\s+/g, ' ').slice(0, 110) +
+        ' · ' + ((h.sp.e - h.sp.s) / 1000).toFixed(2) + 's · exit ' + (h.sp.exit == null ? '-' : h.sp.exit);
+      ctx.font = '10px Consolas, monospace';
+      const tw = ctx.measureText(txt).width;
+      const bx = Math.max(x0 + 2, Math.min((vmCursorX || x0) + 8, x1 - tw - 8));
+      const by = Math.max(y0 + 10, Math.min(h.y1 + 14, y0 + mainH - 2));
+      ctx.fillStyle = '#000000dd';
+      ctx.fillRect(bx - 4, by - 12, tw + 8, 16);
+      ctx.strokeStyle = C.gutterLine;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 4.5, by - 12.5, tw + 9, 17);
+      ctx.fillStyle = '#ffd08a';
+      ctx.textAlign = 'left';
+      ctx.fillText(txt, bx, by);
     }
 
     /* D. 时间轴 + 游标 */
@@ -4181,6 +4277,9 @@
     // 十几个沙箱的值可能撞在同一高度（比如三个都停在 824MB），单靠往下推会把
     // 标签推出绘图区：按候选位逐个试，压到已放的标签就换一个位
     const boxes = [];
+    // 首次打开时游标停在峰值处，可见标签少；移到密集时刻后按这一帧重新排一次，
+    // 之后同一批标签固定复用，既不挤在一起也不会随鼠标跳。
+    if (dots.length > vmLabelPos.size) vmLabelPos.clear();
     const hits = (b) => boxes.some(o =>
       !(b[0] > o[0] + o[2] || b[0] + b[2] < o[0] || b[1] > o[1] + o[3] || b[1] + b[3] < o[1]));
     for (const t of dots) {
@@ -4193,21 +4292,32 @@
       ctx.stroke();
       const txt = (ls.length > 1 ? laneLetter(t.lane) + '·' : '') + t.label + ' ' + fmtMem(t.v) + unit;
       const tw = ctx.measureText(txt).width;
-      let lx = null, ly = null;
-      for (const dy of [3, -9, 14, -20, 25, -31]) {
-        for (const side of [1, -1]) {
-          const ax = side > 0 ? cx + 8 : cx - 8 - tw;
-          const ay = t.y + dy;
-          if (ax < x0 + 2 || ax + tw > x1 - 2 || ay < y0 + 9 || ay > y1 - 1) continue;
-          if (hits([ax - 2, ay - 9, tw + 4, 11])) continue;
-          lx = ax; ly = ay; break;
+      const key = (ls.length > 1 ? laneLetter(t.lane) + '|' : '') + t.label;
+      let pos = vmLabelPos.get(key);
+      if (!pos) {
+        let ax0 = null, ay0 = null;
+        for (const dy of [3, -9, 14, -20, 25, -31]) {
+          for (const side of [1, -1]) {
+            const ax = side > 0 ? cx + 8 : cx - 8 - tw;
+            const ay = t.y + dy;
+            if (ax < x0 + 2 || ax + tw > x1 - 2 || ay < y0 + 9 || ay > y1 - 1) continue;
+            if (hits([ax - 2, ay - 9, tw + 4, 11])) continue;
+            ax0 = ax; ay0 = ay; break;
+          }
+          if (ax0 != null) break;
         }
-        if (lx != null) break;
+        if (ax0 == null) {
+          ax0 = Math.max(x0 + 2, Math.min(cx + 8, x1 - tw - 2));
+          ay0 = Math.max(y0 + 9, Math.min(y1 - 1, t.y + 3));
+        }
+        // 落位只算一次：游标移动时标签跟着 x 平移，不再左右/上下反复换位
+        pos = { side: ax0 >= cx ? 1 : -1, dy: ay0 - t.y };
+        vmLabelPos.set(key, pos);
       }
-      if (lx == null) {
-        lx = Math.max(x0 + 2, Math.min(cx + 8, x1 - tw - 2));
-        ly = Math.max(y0 + 9, Math.min(y1 - 1, t.y + 3));
-      }
+      let lx = pos.side > 0 ? cx + 8 : cx - 8 - tw;
+      let ly = t.y + pos.dy;
+      if (lx < x0 + 2 || lx + tw > x1 - 2) lx = Math.max(x0 + 2, Math.min(cx + 8, x1 - tw - 2));
+      ly = Math.max(y0 + 9, Math.min(y1 - 1, ly));
       boxes.push([lx - 2, ly - 9, tw + 4, 11]);
       t.lx = lx; t.ly = ly; t.tw = tw;
       // 描一圈底色：标签压在别的曲线上也能读，比铺色块干净
@@ -4237,7 +4347,8 @@
       return laneLetter(i) + ' 活跃' + pick(d.agg.n_live || []) + ' Σ' + fmtMem(pick(d.agg.rss || [])) + unit;
     });
     memVmEl.querySelector('#vmRead').textContent = vmCursorX != null
-      ? 't+' + fmtDur(rel / 1000) + ' · ' + bits.join(' | ')
+      ? 't+' + fmtDur(rel / 1000) + ' · ' + bits.join(' | ') +
+        (vmHoverTraj ? ' · 工具 ' + String(vmHoverTraj.sp.cmd || '').replace(/\s+/g, ' ').slice(0, 52) : '')
       : vmHintText();
   }
 
@@ -4255,10 +4366,12 @@
       const longest = live.slice().sort((a, b) => (b.t1 - b.t0) - (a.t1 - a.t0))[0];
       const top = live.slice().sort((a, b) => b.rss_peak - a.rss_peak)[0];
       return '<span style="color:' + col + '">' + esc(laneLetter(i) + '·' + memCmpLabel(l)) + '</span>' +
-        '<span class="dim"> · 沙箱 ' + d.n_vm + '（真启动 ' + d.n_live + '）· 峰值并发 ' + (d.peak.n || 0) +
+        '<span class="dim"> · 累计沙箱 ' + d.n_vm + '（真启动 ' + d.n_live + '）· 同时峰值 ' + (d.peak.n || 0) +
         ' · ΣRSS 峰 ' + fmtMem(d.peak.rss || 0) + 'MB' +
         (top ? ' · 最大 ' + esc(top.label) + ' ' + fmtMem(top.rss_peak) + 'MB' : '') +
-        (longest ? ' · 最长 ' + fmtDur((longest.t1 - longest.t0) / 1000) : '') + '</span>';
+        (longest ? ' · 最长 ' + fmtDur((longest.t1 - longest.t0) / 1000) : '') +
+        (l.vmTraj ? ' · 对齐轨迹 ' + l.vmTraj.eps.length +
+          '（已配对 ' + ((l.vmBind || []).filter(b => b.vm).length) + '）' : '') + '</span>';
     }).join('');
   }
 
@@ -4272,19 +4385,34 @@
       e.stopPropagation();
       memVmEl.style.display = 'none';
       vmCursorX = null;
+      vmHoverTraj = null;
     }
   }, true);
   memVmEl.querySelector('#vmMetric').addEventListener('change', async (e) => {
     vmMetric = e.target.value;
     await reloadMemVm();
   });
+  memVmEl.querySelector('#vmShowAll').addEventListener('change', (e) => {
+    vmShowAll = e.target.checked;
+    vmLayoutKey = '';
+    drawMemVm();
+  });
   memVmEl.querySelector('#vmReload').addEventListener('click', () => { reloadMemVm(); });
   vmCvEl.addEventListener('mousemove', (e) => {
     const r = vmCvEl.getBoundingClientRect();
-    vmCursorX = e.clientX - r.left;
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    vmCursorX = px;
+    vmHoverTraj = vmTrajHit.find(h => px >= h.x0 && px <= h.x1 && py >= h.y0 && py <= h.y1) || null;
+    vmLastMove = { px, py, hit: !!vmHoverTraj };
+    if (vmRaf) return;
+    vmRaf = requestAnimationFrame(() => { vmRaf = 0; drawMemVm(); });
+  });
+  vmCvEl.addEventListener('mouseleave', () => {
+    vmCursorX = null;
+    vmHoverTraj = null;
+    if (vmRaf) { cancelAnimationFrame(vmRaf); vmRaf = 0; }
     drawMemVm();
   });
-  vmCvEl.addEventListener('mouseleave', () => { vmCursorX = null; drawMemVm(); });
 
   /* ── 对比视图：跨 run 轨迹宽表（per-traj 口径）+ 倍数热力 ──────────
      列 = 各 lane（每路取当前 run，或「全部 run」聚合）；行 = (issue, sample) 轨迹键（famKey）。
@@ -5156,6 +5284,15 @@
     addLane, applyPayload, baseCiOf, laneRecShare, ensureRecordBaseLane, mcRankFields, mcPickTop, mcKeyOf, cmpLaneCols, memCmpSelRef: () => memCmpSel, memCmpScoreRef: () => memCmpScore,
     openMemVm, reloadMemVm, drawMemVm, loadLaneVm, memVmLanes, vmSetMetric: (m) => { vmMetric = m; return reloadMemVm(); }, vmMetricRef: () => vmMetric,
     memCmpLanes, memCmpConc, memCmpAnchor, memCmpLabel, laneConcSpans,
+    vmTrajHits: () => vmTrajHit, vmHoverTrajRef: () => vmHoverTraj, vmLastMoveRef: () => vmLastMove,
+    vmBindView: () => memVmLanes().map(({ l, i }) => ({
+      lane: i, showAll: vmShowAll,
+      pairs: (l.vmBind || []).map(b => ({
+        samp: b.ep.samp, ep: b.ep.id, vm: b.vm ? b.vm.label : null,
+        deltaMs: b.delta, col: b.vm ? (l.vmSidTraj.get(b.vm.sid) != null
+          ? vmColOf(i, l.vmSidTraj.get(b.vm.sid)) : null) : null
+      }))
+    })),
     memBigConcRef: () => memBigConc };
 
   boot();
