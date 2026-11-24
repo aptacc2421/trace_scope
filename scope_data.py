@@ -99,6 +99,18 @@ def _span_stats(spans):
     return st
 
 
+def _tool_call_stats(spans, to_s=299.0):
+    """工具调用单次耗时口径（per-traj 宽表 / calc.md §8）：
+    n/sum=全量条数与累计秒；to=≥299s 的超时条数；nc/sc=剔除超时后的条数/累计秒（单次均值=sc/nc）。"""
+    durs = [(sp["e"] - sp["s"]) / 1000 for sp in spans if sp["t"] == "tool"]
+    keep = [d for d in durs if d < to_s]
+    return {
+        "n": len(durs), "sum": round(sum(durs), 3),
+        "to": len(durs) - len(keep),
+        "nc": len(keep), "sc": round(sum(keep), 3),
+    }
+
+
 def _top_gen(spans, n=8):
     """最慢推理段 TOP-N（全局 TOP-N 必落在各 episode TOP-N 的并集里）。"""
     gens = sorted((sp for sp in spans if sp["t"] == "gen"),
@@ -174,6 +186,29 @@ def build_episode(ep, with_spans=True, src=None):
     if failed is None:
         failed = sum(1 for st in steps if any(x != 0 for x in (st.get("exits") or [0])))
 
+    # 录制数据标记：trace-v3 是数据集生成时落盘的录制轨迹（带 source_run），
+    # 回放由 sandbox_workflow 写 trace-v2。对比视图靠它把「录制基线」与回放路分开。
+    schema = str(ep.get("schema") or "")
+    recorded = 1 if (schema.endswith("-v3") or ep.get("source_run")) else 0
+
+    # 推理量：录制轨迹逐步记了 prompt/completion token 与 ttft；回放把 token 数原样带下来，
+    # 但不起模型（replay 直接 sleep 录制时的每步延迟），所以两路 gen 秒数天生相同。
+    # 要跨模型 / 跨硬件比，只能用 token 数重算 gen = ttft + completion ÷ 吞吐。
+    tot = ep.get("totals") or {}
+    ct = tot.get("completion_tokens")
+    pt = tot.get("prompt_tokens")
+    tt = tot.get("ttft_sum_s")
+    if ct is None:
+        ct = sum(int(st.get("completion_tokens") or 0) for st in steps)
+    if pt is None:
+        pt = sum(int(st.get("prompt_tokens") or 0) for st in steps)
+    if tt is None:
+        tt = sum(float(st.get("ttft_s") or 0) for st in steps)
+    ct, pt, tt = int(ct or 0), int(pt or 0), float(tt or 0)
+    # tps 用「去掉首 token 等待后的纯解码速率」，逐步 decode_tps 在 token 数很小的步上会被
+    # 除零放大成几十万，只做整条的才可比
+    tps = ct / (gen_s - tt) if gen_s and gen_s > tt else 0.0
+
     out = {
         "id": f"{trace}__t{task}__s{samp}",
         "seq": ep.get("seq"),
@@ -183,6 +218,8 @@ def build_episode(ep, with_spans=True, src=None):
         "wall": round(wall or 0.0, 3),
         "gen_s": round(gen_s or 0.0, 3), "tool_s": round(tool_s or 0.0, 3),
         "n_steps": len(steps), "failed": failed,
+        "rec": recorded,
+        "tok": {"ct": ct, "pt": pt, "ttft": round(tt, 3), "tps": round(tps, 2)},
         "stop": ep.get("stop_reason") or "",
         "reward": ep.get("reward"),
         # 预聚合（概要层下发，波形 spans 按需加载后这些统计不再依赖全量 span）
@@ -190,6 +227,7 @@ def build_episode(ep, with_spans=True, src=None):
         "tiv": _merge_iv([sp for sp in spans if sp["t"] == "tool"], start, end, fallback=False),
                                               # 仅 tool span 合并（沙箱内实际占用口径）；无工具调用为空
         "ag": _span_stats(spans),             # gen/tool 块耗时 [条数, 累计秒, 最大秒]
+        "tstat": _tool_call_stats(spans),     # 工具单次耗时口径（300s 超时剔除，宽表/对比用）
         "top": _top_gen(spans),               # 最慢推理段 TOP-8
     }
     # 文件来源：仅服务端按需读取 spans 时用，不下发概要层；src=(run_dir, file_path)
@@ -245,17 +283,19 @@ def load_run(run_dir: Path, with_spans: bool = True):
             src = ("manifest", str(manifest), i)
         episodes.append(build_episode(ep, with_spans, src))
 
-    # records 里有、manifest 没有的 episode 补进来
-    have = {(e["trace"], e["task"], e["samp"]) for e in episodes}
+    # records 里有、manifest 没用到的 episode 全部补进来。
+    # 同键多文件 = 重跑副本（数据命名约定 __dN 文件名后缀），一并收入，
+    # 由末尾 __dN 重命名区分；已被 take_src 分配给 manifest 条目的文件不重复加。
+    used_files = {e["_src"][1] for e in episodes if e.get("_src") and e["_src"][0] == "file"}
     for f in sorted(rec_dir.glob("*.json")) if rec_dir.is_dir() else []:
+        if str(f) in used_files:
+            continue
         try:
             ep = build_episode(json.loads(f.read_text(encoding="utf-8")),
                                with_spans, ("file", str(f)))
         except (json.JSONDecodeError, OSError):
             continue
-        if (ep["trace"], ep["task"], ep["samp"]) not in have:
-            episodes.append(ep)
-            have.add((ep["trace"], ep["task"], ep["samp"]))
+        episodes.append(ep)
 
     # 逐样本记录直接落在 run 目录（命名：<trace>__tN__sM.json）
     for f in sorted(run_dir.glob("*.json")):
@@ -560,6 +600,10 @@ def load_memlog(path_str: str, ref_ms=None, max_points: int = 2400) -> dict:
                     # cg.io.<块设备>.* 按设备逐个展开（单文件可达数千字段、字段数爆炸且前端默认隐藏），整体丢弃；
                     # 其余 cg.*（stat/events/cpu/psi 等稳定家族）照常保留
                     continue
+                if k.startswith("per_vm."):
+                    # 每沙箱明细（pid → rss/pss/cpu/io）拍平后是几百个字段，会把字段面板冲垮；
+                    # 它单独走 load_memlog_vm 的解析与 per-VM 面板
+                    continue
                 if k not in seen:
                     seen.add(k)
                     order.append(k)
@@ -593,4 +637,165 @@ def load_memlog(path_str: str, ref_ms=None, max_points: int = 2400) -> dict:
         "path": str(p), "n": n,
         "t0": t0, "t1": t1,
         "fields": order, "series": series, "range": rng,
+    }
+
+
+# ── 每沙箱（per-VM）明细 ─────────────────────────────────────────────
+# memlog 的 per_vm 段按 pid 列出每个 Firecracker 进程的占用：
+#   {pid: {api_sock, cg, rss_mb, swap_mb, threads, cpu_pct,
+#          smaps:{rss_kb,pss_kb,anon_kb,file_kb},
+#          io:{rchar,wchar,...}, io_rate:{read_mb_s,write_mb_s}}}
+# 这一层和主机级 / cgroup 级字段不是同一种东西：它回答的是「哪个沙箱吃掉多少、
+# 活了多久、什么时候回收」，所以单独解析、单独开面板。
+VM_METRICS = {
+    "rss": ("rss_mb", 1.0),
+    "pss": (("smaps", "pss_kb"), 1 / 1024.0),
+    "anon": (("smaps", "anon_kb"), 1 / 1024.0),
+    "file": (("smaps", "file_kb"), 1 / 1024.0),
+    "cpu": ("cpu_pct", 1.0),
+    "io_r": (("io_rate", "read_mb_s"), 1.0),
+    "io_w": (("io_rate", "write_mb_s"), 1.0),
+    "threads": ("threads", 1.0),
+}
+
+
+def _vm_val(v: dict, key):
+    """按 ('smaps','pss_kb') / 'rss_mb' 两种写法取嵌套值。"""
+    if isinstance(key, tuple):
+        cur = v
+        for k in key:
+            cur = cur.get(k) if isinstance(cur, dict) else None
+        val = cur
+    else:
+        val = v.get(key)
+    try:
+        return float(val or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _downsample_minmax(pts: list, max_points: int) -> list:
+    """按时间窗保 min/max 两点降采样（峰值不丢），点数 ≤ max_points。"""
+    if not max_points or max_points <= 0 or len(pts) <= max_points:
+        return pts
+    wins = max(1, max_points // 2)
+    step = (len(pts) + wins - 1) // wins
+    out = []
+    for i in range(0, len(pts), step):
+        chunk = pts[i:i + step]
+        if not chunk:
+            continue
+        if len(chunk) == 1:
+            out.append(chunk[0])
+            continue
+        lo = min(chunk, key=lambda p: p[1])
+        hi = max(chunk, key=lambda p: p[1])
+        out.extend([lo, hi] if lo[0] <= hi[0] else [hi, lo])
+    return out
+
+
+def _vm_label(sid: str, pid: str) -> str:
+    """agentenv-fc-3abVEs → 3abVEs；没有 api_sock 就用 pid 尾巴。"""
+    sid = str(sid or "")
+    if sid.startswith("agentenv-fc-"):
+        return sid[len("agentenv-fc-"):]
+    return sid or ("pid" + str(pid)[-5:])
+
+
+def load_memlog_vm(path_str: str, metric: str = "rss", max_points: int = 520) -> dict:
+    """解析 memlog 的 per_vm 段 → 每沙箱一条曲线 + 每采样的汇总。
+
+    返回
+      agg：每采样的活跃沙箱数 / Σrss / Σpss / Σanon / Σcpu / Σio（只取一个标量序列）
+      vms：每个沙箱 {sid,pid,label,t0,t1,n,peak,pts}，pts 为所选 metric 的时间序列
+    metric 只影响 vms[].pts；agg 里的各量始终齐全，切换指标不必重取。
+    """
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"文件不存在: {p}")
+    if metric not in VM_METRICS:
+        metric = "rss"
+    key, scale = VM_METRICS[metric]
+    agg_keys = ("n", "n_live", "rss", "pss", "anon", "cpu", "io_r", "io_w")
+    agg_pts = {k: [] for k in agg_keys}
+    vms: dict = {}
+    dc: dict = {}
+    n_samples = 0
+    n_pv = 0
+    t0 = t1 = None
+    with open(p, encoding="utf-8", errors="replace") as f:
+        if not f.readline().lstrip().startswith("{"):
+            raise ValueError("per-VM 明细只存在于 JSONL 格式的 memlog")
+        f.seek(0)
+        for line in f:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                d = json.loads(line)
+                t = _memlog_ts_ms(str(d.get("ts", ""))[:19], dc)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+            pv = d.get("per_vm") or {}
+            if not isinstance(pv, dict):
+                pv = {}
+            if pv:
+                n_pv += 1
+            s = {"n": len(pv), "n_live": 0, "rss": 0.0, "pss": 0.0, "anon": 0.0,
+                 "cpu": 0.0, "io_r": 0.0, "io_w": 0.0}
+            for pid, v in pv.items():
+                if not isinstance(v, dict):
+                    continue
+                smaps = v.get("smaps") or {}
+                ior = v.get("io_rate") or {}
+                rss_mb = _vm_val(v, "rss_mb")
+                # 采集端的口径：真 boot 过的沙箱 rss 远大于 64MB，几 MB 的是残留进程
+                if rss_mb >= 64:
+                    s["n_live"] += 1
+                s["rss"] += rss_mb
+                s["pss"] += float(smaps.get("pss_kb") or 0) / 1024.0
+                s["anon"] += float(smaps.get("anon_kb") or 0) / 1024.0
+                s["cpu"] += _vm_val(v, "cpu_pct")
+                s["io_r"] += float(ior.get("read_mb_s") or 0)
+                s["io_w"] += float(ior.get("write_mb_s") or 0)
+                sid = v.get("api_sock") or ("pid" + str(pid))
+                vm = vms.get(sid)
+                if vm is None:
+                    vm = {"sid": sid, "pid": str(pid), "label": _vm_label(sid, pid),
+                          "t0": t, "t1": t, "peak": 0.0, "rss_peak": 0.0, "pts": []}
+                    vms[sid] = vm
+                vm["t1"] = t
+                if rss_mb > vm["rss_peak"]:
+                    vm["rss_peak"] = round(rss_mb, 2)
+                raw = _vm_val(v, key) * scale
+                vm["pts"].append([t, round(raw, 2)])
+                if raw > vm["peak"]:
+                    vm["peak"] = round(raw, 2)
+            for k in agg_keys:
+                agg_pts[k].append([t, round(s[k], 2)])
+            n_samples += 1
+            if t0 is None or t < t0:
+                t0 = t
+            if t1 is None or t > t1:
+                t1 = t
+    if not n_samples:
+        raise ValueError("这个 memlog 里没有 per_vm 段（采集时未开 per-vm 层）")
+    if not n_pv:
+        raise ValueError("这个 memlog 里没有 per_vm 段（采集时未开 per-vm 层，只有主机级 / cgroup 级字段）")
+    out_vms = []
+    for vm in vms.values():
+        vm["n"] = len(vm["pts"])
+        vm["live"] = 1 if vm["rss_peak"] >= 64 else 0
+        vm["pts"] = _downsample_minmax(vm["pts"], max_points)
+        out_vms.append(vm)
+    out_vms.sort(key=lambda v: (-v["live"], -v["rss_peak"], v["t0"]))
+    agg = {k: _downsample_minmax(v, max_points) for k, v in agg_pts.items()}
+    return {
+        "path": str(p), "metric": metric, "metrics": list(VM_METRICS),
+        "t0": t0, "t1": t1, "n": n_samples,
+        "n_vm": len(out_vms),
+        "n_live": sum(v["live"] for v in out_vms),
+        "peak": {"n": max((p[1] for p in agg["n_live"]), default=0),
+                 "rss": max((p[1] for p in agg["rss"]), default=0)},
+        "agg": agg, "vms": out_vms,
     }

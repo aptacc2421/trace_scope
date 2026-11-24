@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -88,6 +89,7 @@ def scan_json(path_str: str, refresh: bool = False) -> bytes:
 SPAN_CACHE_MAX = 400  # 最多缓存 400 条 episode 的 spans（约几万 span），超出淘汰最早条目
 
 MEMLOG_CACHE: dict[str, tuple] = {}  # path -> (mtime_ns, size, json_bytes)
+VM_CACHE: dict[str, tuple] = {}      # path -> ((mtime_ns, size, metric), json_bytes)
 
 
 def memlog_json(path_str: str, ref_ms=None) -> bytes:
@@ -105,6 +107,24 @@ def memlog_json(path_str: str, ref_ms=None) -> bytes:
     if len(MEMLOG_CACHE) >= 8:
         MEMLOG_CACHE.pop(next(iter(MEMLOG_CACHE)))
     MEMLOG_CACHE[str(p)] = (sig, None, body)
+    return body
+
+
+def vm_json(path_str: str, metric: str = "rss") -> bytes:
+    """memlog 的 per-VM 明细缓存：按（文件，指标）只解析一次。"""
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_file():
+        raise ValueError(f"文件不存在: {p}")
+    st = p.stat()
+    sig = (st.st_mtime_ns, st.st_size, metric)
+    hit = VM_CACHE.get(str(p))
+    if hit and hit[0] == sig:
+        return hit[1]
+    d = scope_data.load_memlog_vm(str(p), metric)
+    body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(VM_CACHE) >= 12:
+        VM_CACHE.pop(next(iter(VM_CACHE)))
+    VM_CACHE[str(p)] = (sig, body)
     return body
 
 
@@ -197,6 +217,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _index(self):
+        """首页：把 __BUILD__ 换成 index.html 的修改时间。
+
+        页面自己印不出「这是哪一版」，改完样式或逻辑后只能靠文案差异反推
+        浏览器跑的是不是新文件；用文件 mtime 注入，改一次就自动换一次。
+        """
+        p = FRONTEND / "index.html"
+        if not p.is_file():
+            self._json({"error": "frontend/index.html 缺失"}, 404)
+            return
+        stamp = datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M").encode()
+        body = p.read_bytes().replace(b"__BUILD__", stamp)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -221,8 +260,10 @@ class Handler(BaseHTTPRequestHandler):
                 ref = q.get("ref")
                 self._json_bytes(memlog_json(
                     q.get("path", ""), float(ref) if ref else None))
+            elif u.path == "/api/memlog/vm":
+                self._json_bytes(vm_json(q.get("path", ""), q.get("metric") or "rss"))
             elif u.path in ("/", "/index.html"):
-                self._file(FRONTEND / "index.html")
+                self._index()
             elif u.path == "/data.js":
                 f = FRONTEND / "data.js"
                 if f.is_file():
