@@ -2571,12 +2571,20 @@
   /* ── 打开文件夹弹窗 ─────────────────── */
   let targetLane = 0;
   const modal = $('#folderModal');
-  function openModal(idx) {
+  let modalMode = 'lane';  // 'lane' = 给单路打开一个 run；'all' = 选根目录整目录加载
+  function openModal(idx, mode) {
+    modalMode = mode || 'lane';
     targetLane = idx;
     const lane = state.lanes[idx];
     modal.style.display = 'flex';
-    $('#modalTitle').textContent = '打开数据文件夹 · ' + laneLetter(idx) + ' 路';
-    $('#folderPath').value = lane && lane.payload ? lane.payload.root : '';
+    const all = modalMode === 'all';
+    $('#modalTitle').textContent = all ? '整目录加载 · 选择根目录（含所有 run）'
+      : '打开数据文件夹 · ' + laneLetter(idx) + ' 路';
+    $('#scanBtn').textContent = all ? '整目录加载' : '扫描';
+    // 整目录模式预填当前有效根，用户可直接确认或浏览改选；占位串不预填
+    const cur = ($('#rootPath').textContent || '').trim();
+    const validCur = cur && !cur.startsWith('加载') && cur !== '未打开数据' && !cur.startsWith('无数据');
+    $('#folderPath').value = all ? (validCur ? cur : '') : (lane && lane.payload ? lane.payload.root : '');
     renderRecent();
     loadDir($('#folderPath').value);
   }
@@ -2659,7 +2667,16 @@
     const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
     loadDir(i > 0 ? p.slice(0, i) : p);
   });
-  $('#scanBtn').addEventListener('click', () => scanPath($('#folderPath').value, true));
+  $('#scanBtn').addEventListener('click', () => {
+    const p = $('#folderPath').value.trim();
+    if (modalMode === 'all') {
+      if (!p) { setModalStatus('请先选择一个根目录', true); return; }
+      closeModal();
+      autoLoadAll(p);
+    } else {
+      scanPath(p, true);
+    }
+  });
   $('#folderPath').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') loadDir($('#folderPath').value);
   });
@@ -4382,7 +4399,7 @@
   const memGuestBtnEl = document.querySelector('#memGuestBtn');
   if (memGuestBtnEl) memGuestBtnEl.addEventListener('click', () => { openMemGuest(); });
   const autoLoadBtnEl = document.querySelector('#autoLoadBtn');
-  if (autoLoadBtnEl) autoLoadBtnEl.addEventListener('click', () => { autoLoadAll(); });
+  if (autoLoadBtnEl) autoLoadBtnEl.addEventListener('click', () => { openModal(state.activeLane, 'all'); });
   memVmEl.querySelector('#vmClose').addEventListener('click', () => {
     memVmEl.style.display = 'none';
   });
