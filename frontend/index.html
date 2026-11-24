@@ -4829,11 +4829,12 @@
   memPairEl.innerHTML =
     '<div class="mb-h">' +
       '<b>对照视图</b> <span class="dim" id="pairName"></span>' +
+      '<span class="dim" id="pairBuild" title="代码版本：页面每次启动注入 index.html 的修改时间"></span>' +
       '<span class="mb-read" id="pairRead"></span>' +
-      '<select id="pairField" title="选择两侧可比的同名物理量">' +
+      '<select id="pairField" autocomplete="off" title="选择两侧可比的同名物理量">' +
         PAIR_FIELDS.map(p => '<option value="' + p.key + '">' + p.label + '</option>').join('') +
       '</select>' +
-      '<button class="btn" id="pairReload">重读</button>' +
+      '<button class="btn" id="pairReload" title="清缓存并回到默认字段（常驻/已用）重新读两侧数据">重读</button>' +
       '<button class="btn" id="pairClose">关闭（Esc）</button>' +
     '</div>' +
     '<div class="mb-note" id="pairNote"></div>' +
@@ -4902,6 +4903,7 @@
     const ls = pairLanes();
     // pairKey 可能经 scopeDebug / openMemPair 改变，下拉框必须跟着走，不能停在旧选项上
     memPairEl.querySelector('#pairField').value = pairKey;
+    memPairEl.querySelector('#pairBuild').textContent = '构建 ' + BUILD;
     memPairEl.querySelector('#pairName').textContent =
       ls.map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l)).join('   vs   ');
     memPairEl.querySelector('#pairRead').textContent = '读取 fc 与 guest 两侧 …';
@@ -5194,6 +5196,9 @@
     reloadMemPair();
   });
   memPairEl.querySelector('#pairReload').addEventListener('click', () => {
+    // 重读也回到默认字段：停在一个 fc 全 0 的字段上反复重读没有意义
+    pairKey = PAIR_FIELDS[0].key;
+    memPairEl.querySelector('#pairField').value = pairKey;
     pairLanes().forEach(({ l }) => { l.pairData = null; });
     reloadMemPair();
   });
