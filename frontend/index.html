@@ -4881,6 +4881,10 @@
   }
 
   async function openMemPair() {
+    // 每次打开都回到默认字段（rss）——上次停在 anon 且那条 run 没开 smaps 时，
+    // 打开就看到一条贴底的 0 线，很容易误以为 fc 真没数据。
+    pairKey = PAIR_FIELDS[0].key;
+    memPairEl.querySelector('#pairField').value = pairKey;
     memPairEl.style.display = 'flex';
     memCmpEl.style.display = 'none';
     memBigEl.style.display = 'none';
@@ -4896,6 +4900,8 @@
     pairHoverTool = null;
     const cfg = pairCfg();
     const ls = pairLanes();
+    // pairKey 可能经 scopeDebug / openMemPair 改变，下拉框必须跟着走，不能停在旧选项上
+    memPairEl.querySelector('#pairField').value = pairKey;
     memPairEl.querySelector('#pairName').textContent =
       ls.map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l)).join('   vs   ');
     memPairEl.querySelector('#pairRead').textContent = '读取 fc 与 guest 两侧 …';
