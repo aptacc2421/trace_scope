@@ -4502,8 +4502,11 @@
   const gsCvEl = memGuestEl.querySelector('#gsCv');
   let gsField = 'anon_kb';
   let gsCursorX = null;
+  let gsCursorY = null;
+  let gsHoverTool = null;
   let gsLayoutKey = '';
   let gsRaf = 0;
+  let gsGuestHits = [];
   const gsGuestLanes = () => state.lanes.map((l, i) => ({ l, i })).filter(x => x.l.guest);
   const gsLabel = (l) => {
     const r = run(l);
@@ -4539,6 +4542,8 @@
 
   async function reloadMemGuest() {
     gsLayoutKey = '';
+    gsGuestHits = [];
+    gsHoverTool = null;
     const ls = gsGuestLanes();
     memGuestEl.querySelector('#gsName').textContent =
       ls.map(({ l, i }) => laneLetter(i) + '·' + gsLabel(l)).join('   vs   ');
@@ -4594,6 +4599,7 @@
     if (lk !== gsLayoutKey) { prepCv(gsCvEl, ctx, W, H); gsLayoutKey = lk; }
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
+    gsGuestHits = [];
     if (!ls.length) {
       ctx.fillStyle = C.dim;
       ctx.font = '13px Consolas, monospace';
@@ -4738,6 +4744,10 @@
             const a = xx(ss), b = Math.max(a + 1, xx(ee));
             ctx.fillStyle = '#ffb84d';
             ctx.fillRect(a, rowY + 1, b - a, 8);
+            // clientX 取整，命中框也取整，1px 宽的短工具段才点得到（与 per-fc/对照同口径）
+            gsGuestHits.push({ lane: i, samp: t.samp, ep, sp, t,
+              x0: Math.round(a), x1: Math.round(Math.max(a + 1, b)),
+              y0: rowY + 1, y1: rowY + 9 });
           }
         }
         const ser = t.series[gsField] || [];
@@ -4752,12 +4762,36 @@
 
     const rel0 = gsCursorX != null && gsCursorX >= x0 && gsCursorX <= x1
       ? (gsCursorX - x0) / (x1 - x0) * durMax : null;
-    memGuestEl.querySelector('#gsRead').textContent = rel0 == null
+    const toolTip = gsHoverTool
+      ? ' · 工具 s' + (gsHoverTool.samp == null ? '?' : gsHoverTool.samp) +
+        ' step' + (gsHoverTool.sp.i == null ? '?' : gsHoverTool.sp.i) +
+        ' ' + String(gsHoverTool.sp.cmd || '').replace(/\s+/g, ' ').slice(0, 80) +
+        ' · ' + ((gsHoverTool.sp.e - gsHoverTool.sp.s) / 1000).toFixed(2) + 's'
+      : '';
+    memGuestEl.querySelector('#gsRead').textContent = (rel0 == null
       ? '每条轨迹一条曲线，颜色与底部轨迹一致 · 暗段=推理 亮段=工具 · 游标看各轨迹采样值'
       : 't+' + fmtDur(rel0 / 1000) + ' · ' + (GUEST_LABEL[gsField] || gsField) +
-        ' · guest 视角（注入 guest 读 /proc）';
+        ' · guest 视角（注入 guest 读 /proc）') + toolTip;
+    // 工具段 hover 提示框（画在最上层，与 per-fc/对照同口径）
+    if (gsHoverTool && gsCursorX != null) {
+      const h = gsHoverTool;
+      const txt = 's' + (h.samp == null ? '?' : h.samp) + ' step' + (h.sp.i == null ? '?' : h.sp.i) +
+        ' · ' + String(h.sp.cmd || h.sp.t).replace(/\s+/g, ' ').slice(0, 100) +
+        ' · ' + ((h.sp.e - h.sp.s) / 1000).toFixed(2) + 's · exit ' + (h.sp.exit == null ? '-' : h.sp.exit);
+      ctx.font = '10px Consolas, monospace';
+      const tw = ctx.measureText(txt).width;
+      const bx = Math.max(x0 + 2, Math.min(gsCursorX + 8, x1 - tw - 8));
+      const by = Math.max(y0 + 12, Math.min(h.y1 + 16, y1 - 2));
+      ctx.fillStyle = '#000000dd';
+      ctx.fillRect(bx - 4, by - 12, tw + 8, 16);
+      ctx.strokeStyle = C.gutterLine;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 4.5, by - 12.5, tw + 9, 17);
+      ctx.fillStyle = '#ffd08a';
+      ctx.textAlign = 'left';
+      ctx.fillText(txt, bx, by);
+    }
   }
-  let gsGuestHits = [];
 
   function renderGuestList() {
     const ls = gsGuestLanes().filter(({ l }) => l.guestCache);
@@ -4788,22 +4822,30 @@
   memGuestEl.querySelector('#gsClose').addEventListener('click', () => {
     memGuestEl.style.display = 'none';
     gsCursorX = null;
+    gsHoverTool = null;
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && memGuestEl.style.display !== 'none') {
       e.stopPropagation();
       memGuestEl.style.display = 'none';
       gsCursorX = null;
+      gsHoverTool = null;
     }
   }, true);
   gsCvEl.addEventListener('mousemove', (e) => {
     const r = gsCvEl.getBoundingClientRect();
     gsCursorX = e.clientX - r.left;
+    gsCursorY = e.clientY - r.top;
+    // 工具段命中：gsGuestHits 里每项都有 sp
+    gsHoverTool = gsGuestHits.find(h => gsCursorX >= h.x0 && gsCursorX <= h.x1 &&
+      gsCursorY >= h.y0 && gsCursorY <= h.y1) || null;
     if (gsRaf) return;
     gsRaf = requestAnimationFrame(() => { gsRaf = 0; drawMemGuest(); });
   });
   gsCvEl.addEventListener('mouseleave', () => {
     gsCursorX = null;
+    gsCursorY = null;
+    gsHoverTool = null;
     if (gsRaf) { cancelAnimationFrame(gsRaf); gsRaf = 0; }
     drawMemGuest();
   });
@@ -6197,6 +6239,11 @@
     })),
     autoLoadAll, gsSetField: (f) => { gsField = f; return reloadMemGuest(); },
     gsFieldRef: () => gsField,
+    gsHits: () => gsGuestHits.map(h => ({ lane: h.lane, samp: h.samp,
+      step: h.sp.i == null ? null : h.sp.i, cmd: String(h.sp.cmd || ''),
+      x0: h.x0, x1: h.x1, y0: h.y0, y1: h.y1 })),
+    gsHoverRef: () => gsHoverTool && { samp: gsHoverTool.samp,
+      step: gsHoverTool.sp.i, cmd: String(gsHoverTool.sp.cmd || '') },
     gsView: () => gsGuestLanes().map(({ l, i }) => ({
       lane: i, label: gsLabel(l), err: l.guestErr || null,
       trajs: l.guestCache ? l.guestCache.trajs.map((t, k) => ({
