@@ -1176,3 +1176,181 @@ def load_pervm(root: str, max_points: int = 900) -> dict:
             "pairs": PERVM_PAIRS, "n": len(vms),
             "n_guest": sum(v["has_guest"] for v in vms),
             "n_host": sum(v["has_host"] for v in vms)}
+
+
+# SWE 负载总览：guest /proc 内存按 episode 聚合。字段均为 kB → MB。
+SWE_MEM_FIELDS = [
+    ("AnonPages", "anon", "匿名页"),
+    ("Cached", "cached", "页缓存"),
+    ("Slab", "slab", "Slab"),
+    ("Shmem", "shmem", "共享内存"),
+    ("Mapped", "mapped", "Mapped"),
+    ("PageTables", "pagetables", "页表"),
+    ("KernelStack", "kstack", "内核栈"),
+    ("SReclaimable", "sreclaim", "可回收 Slab"),
+]
+
+
+def load_swe_summary(root: str) -> dict:
+    """SWE 批次负载总览：按 episode 聚合 guest 内存均值/峰值/占比 + 步数与时间。
+
+    episode ↔ sandbox 配对：guest.csv 末帧时间 ≈ episode.finished_at（30s 容差，一对一贪心）。
+    4 条样本并行、时间窗重叠，started_at 无法区分；末帧时间与结束时刻一一对应（实测 42/48，
+    未配对的 6 条是 000803 无 guest 采样）。每个 episode 在配对 guest.csv 上统计：
+      - mean_mb / peak_mb：各 /proc 字段在 episode 时间窗内的均值与峰值（kB→MB）
+      - share：各类占「已用」(MemTotal−MemAvailable) 的比例，用于堆叠占比图
+      - spans：gen/tool span（复用 steps_to_spans），用于逐 VM 面板叠加 episode 进度
+    返回 episodes（按 issue/sample 排序）+ by_issue 聚合。
+    """
+    p = Path(root).expanduser().resolve()
+    runs = p / "runs"
+    if not runs.is_dir():
+        raise ValueError(f"目录不存在或无 runs/: {p}")
+
+    # 1) episode 列表
+    eps = []
+    for f in sorted(runs.glob("*/records/*.json")):
+        if f.name == "run.json":
+            continue
+        try:
+            e = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        st, en = parse_ts(e.get("started_at")), parse_ts(e.get("finished_at"))
+        if st is None:
+            continue
+        steps = extract_steps(e)
+        tt = e.get("totals") or {}
+        eps.append({
+            "issue_id": str(e.get("issue_id") or ""),
+            "sample_idx": e.get("sample_idx"),
+            "start": st, "end": en if en is not None else st,
+            "steps": len(steps), "wall_s": tt.get("wall_s"),
+            "gen_s": tt.get("gen_s"), "tool_s": tt.get("tool_s"),
+            "peak_mem_mb": tt.get("peak_mem_mb"),
+            "prompt_tokens": tt.get("prompt_tokens"),
+            "completion_tokens": tt.get("completion_tokens"),
+            "reward": e.get("reward"), "stop_reason": e.get("stop_reason"),
+            "digest_start": e.get("guest_digest_start"), "digest_end": e.get("guest_digest"),
+            "spans": steps_to_spans(steps),
+            "path": str(f.relative_to(p)),
+            "sandbox": None, "mem": None,
+        })
+    if not eps:
+        raise ValueError("runs/*/records 下没有 episode")
+
+    # 2) guest.csv：末帧时间 + 全字段序列（kB 原值，统计时 /1024）
+    gl = []
+    gdir = p / "per-vm"
+    for gf in sorted(gdir.glob("*/guest.csv")) if gdir.is_dir() else []:
+        if gf.stat().st_size < 40:
+            continue
+        try:
+            with open(gf, encoding="utf-8", errors="replace", newline="") as fh:
+                rows = list(csv.DictReader(fh))
+        except (OSError, csv.Error):
+            continue
+        if not rows:
+            continue
+        try:
+            last_ts = float(rows[-1].get("ts") or 0)
+        except (ValueError, TypeError):
+            continue
+        seq = {}
+        for h in SWE_MEM_FIELDS:
+            k = h[0]
+            vals = []
+            for r in rows:
+                try:
+                    v = float(r.get(k) or 0)
+                except (ValueError, TypeError):
+                    v = 0.0
+                vals.append(v / 1024.0)
+            seq[k] = vals
+        # 已用 = MemTotal − MemAvailable（kB→MB）
+        used = []
+        for r in rows:
+            try:
+                used.append(max(0.0, (float(r.get("MemTotal") or 0) -
+                                      float(r.get("MemAvailable") or 0)) / 1024.0))
+            except (ValueError, TypeError):
+                used.append(0.0)
+        seq["_used"] = used
+        try:
+            ts_seq = [float(r["ts"]) for r in rows]
+        except (ValueError, TypeError, KeyError):
+            ts_seq = [0.0] * len(rows)
+        gl.append({"sandbox": gf.parent.name, "last_ts": last_ts,
+                   "seq": seq, "ts": ts_seq, "n": len(rows)})
+
+    # 3) 一对一贪心配对：末帧时间 ↔ episode.finished_at
+    used_sb = set()
+    for e in sorted(eps, key=lambda x: x["end"]):
+        cands = [g for g in gl if g["sandbox"] not in used_sb and abs(g["last_ts"] * 1000 - e["end"]) <= 30000]
+        if not cands:
+            continue
+        best = min(cands, key=lambda g: abs(g["last_ts"] * 1000 - e["end"]))
+        used_sb.add(best["sandbox"])
+        e["sandbox"] = best["sandbox"]
+        e["mem"] = best
+
+    # 4) 每 episode 聚合
+    out_eps = []
+    for e in eps:
+        g = e["mem"]
+        mem = {"mean_mb": {}, "peak_mb": {}, "share": {}, "n_samples": 0}
+        if g:
+            used = g["seq"]["_used"]
+            n = len(used)
+            mean_used = sum(used) / n if n else 0.0
+            mem["n_samples"] = n
+            mem["mean_mb"]["used"] = round(mean_used, 2)
+            mem["peak_mb"]["used"] = round(max(used), 2) if used else 0.0
+            for src, key, _ in SWE_MEM_FIELDS:
+                vals = g["seq"][src]
+                mv = sum(vals) / n if n else 0.0
+                mem["mean_mb"][key] = round(mv, 2)
+                mem["peak_mb"][key] = round(max(vals), 2) if vals else 0.0
+                mem["share"][key] = round(mv / mean_used, 4) if mean_used > 0 else 0.0
+        out_eps.append({
+            "issue_id": e["issue_id"], "sample_idx": e["sample_idx"],
+            "start": e["start"], "end": e["end"],
+            "steps": e["steps"], "wall_s": e["wall_s"],
+            "gen_s": e["gen_s"], "tool_s": e["tool_s"],
+            "peak_mem_mb": e["peak_mem_mb"],
+            "prompt_tokens": e["prompt_tokens"], "completion_tokens": e["completion_tokens"],
+            "reward": e["reward"], "stop_reason": e["stop_reason"],
+            "sandbox": e["sandbox"], "mem": mem,
+            "spans": e["spans"], "path": e["path"],
+        })
+    out_eps.sort(key=lambda x: (x["issue_id"], x["sample_idx"] if x["sample_idx"] is not None else 99))
+
+    # 5) 按 issue 聚合（每 issue 4 条样本取均值）
+    by_issue = {}
+    for e in out_eps:
+        k = e["issue_id"] or "(unknown)"
+        d = by_issue.setdefault(k, {"issue_id": k, "n": 0, "n_mem": 0,
+                                    "mean_mb": {}, "share": {},
+                                    "steps": 0.0, "wall_s": 0.0, "peak_mem_mb": 0.0})
+        d["n"] += 1
+        if e["mem"]["n_samples"]:
+            d["n_mem"] += 1
+            for key, v in e["mem"]["mean_mb"].items():
+                d["mean_mb"][key] = d["mean_mb"].get(key, 0.0) + v
+            for key, v in e["mem"]["share"].items():
+                d["share"][key] = d["share"].get(key, 0.0) + v
+        for key in ("steps", "wall_s", "peak_mem_mb"):
+            if e.get(key) is not None:
+                d[key] = (d.get(key) or 0.0) + (e[key] or 0)
+    for d in by_issue.values():
+        n = max(d["n"], 1)
+        for key in ("steps", "wall_s", "peak_mem_mb"):
+            d[key] = round((d.get(key) or 0.0) / n, 2)
+        for key in list(d["mean_mb"]):
+            d["mean_mb"][key] = round(d["mean_mb"][key] / max(d["n_mem"], 1), 2)
+        for key in list(d["share"]):
+            d["share"][key] = round(d["share"][key] / max(d["n_mem"], 1), 4)
+    return {"root": str(p), "episodes": out_eps,
+            "by_issue": [by_issue[k] for k in sorted(by_issue)],
+            "fields": [{"src": s, "key": k, "label": lab} for s, k, lab in SWE_MEM_FIELDS],
+            "n": len(out_eps), "n_mem": sum(1 for e in out_eps if e["mem"]["n_samples"])}

@@ -167,10 +167,20 @@
   }
   .per-menu button:hover { background: var(--hover, #2b3550); }
   #memBig .mm-grp { display: flex; flex-direction: column; }
-  #memBig, #memCmp, #memVm, #memGuest, #memPair, #memPerVm {
+  #memBig, #memCmp, #memVm, #memGuest, #memPair, #memPerVm, #memSwe {
     position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
     background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
+  #memSwe .mb-h, #memSwe .mb-note, #memSwe .mb-legend, #memSwe .mb-body, #memSwe .mb-fields { font-family: var(--mono); }
+  #memSwe .mb-note { font-size: 11px; color: var(--dim); line-height: 1.5; padding: 2px 0 4px; }
+  #memSwe .mb-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 12px; font-size: 11px; line-height: 1.5; padding: 2px 0 6px; border-bottom: 1px solid var(--border); }
+  #memSwe .mb-body { flex: 1; min-height: 0; overflow-y: auto; }
+  #memSwe .mb-body canvas { display: block; }
+  #memSwe .sw-row { display: flex; align-items: center; font-size: 11px; }
+  #memSwe .sw-bar { height: 13px; border-radius: 2px; flex: 1; }
+  #memSwe .sw-num { width: 250px; flex: 0 0 250px; text-align: right; padding-left: 8px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #memSwe .sw-k { width: 190px; flex: 0 0 190px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 8px; color: var(--text); }
+  #memSwe .sw-hint { color: var(--dim); }
   #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h, #memPair .mb-h, #memPerVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
   #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read, #memPair .mb-read, #memPerVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
   #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body, #memPerVm .mb-body { flex: 1; min-height: 0; }
@@ -550,6 +560,7 @@
           <button data-per="guest" title="guest.csv，注入 guest 读 /proc 的视角">guest · 客户机</button>
           <button data-per="pair" title="同一沙箱的 fc 与 guest 相同物理量画在一起，观察两者关系">对照 · fc↔guest</button>
           <button data-per="pervm" title="pervm-12 布局：per-vm/<sandbox>/guest.csv 与 host/<pid>.csv 按 index.jsonl 配对，逐沙箱双视角曲线">逐VM · pervm-12</button>
+          <button data-per="swe" title="SWE 负载总览：全部 episode 的 guest 各类内存均值占比与大小，按 issue 聚合，可下钻单条 episode">负载总览 · SWE</button>
         </div>
       </div>
       <button class="btn" id="autoLoadBtn" title="扫描当前根目录下所有 run，自动为每路加载轨迹 + host memlog + guest.csv，然后打开 guest 视图">整目录加载</button>
@@ -4445,6 +4456,7 @@
     else if (mode === 'guest') openMemGuest();
     else if (mode === 'pair') openMemPair();
     else if (mode === 'pervm') openMemPerVm();
+    else if (mode === 'swe') openMemSwe();
   });
   document.addEventListener('click', (e) => {
     if (perHostEl && perHostEl.classList.contains('open') && !perHostEl.contains(e.target))
@@ -5330,6 +5342,20 @@
     } catch (e) { return null; }
   }
 
+  // SWE 负载总览：按 episode 聚合 guest 内存 + spans，逐 VM 面板借它叠加 episode 进度
+  let sweData = null;
+  const sweEpOfSandbox = (sb) => (sweData && sb)
+    ? (sweData.episodes.find(e => e.sandbox === sb) || null) : null;
+  async function fetchSweData(root) {
+    if (!root) return null;
+    try {
+      const res = await fetch('/api/swe/load?path=' + encodeURIComponent(root));
+      const j = await res.json();
+      if (!j || j.error || !j.episodes || !j.episodes.length) return null;
+      return j;
+    } catch (e) { return null; }
+  }
+
   async function openMemPerVm() {
     memPerVmEl.style.display = 'flex';
     memCmpEl.style.display = 'none';
@@ -5356,6 +5382,7 @@
       memPerVmEl.querySelector('#pvmNote').textContent = '这个目录不是 pervm 布局（缺 index.jsonl / per-vm / host）。';
       return;
     }
+    sweData = await fetchSweData(sel.value);
     renderPvmVmSelect();
     renderPvmFieldSelect();
     await reloadMemPerVm();
@@ -5403,9 +5430,10 @@
     const body = memPerVmEl.querySelector('.mb-body');
     const W = body.clientWidth;
     const ctx = pvmCvEl.getContext('2d');
-    const axisH = 30;
+    const ep = sweEpOfSandbox(vm && vm.sandbox);
+    const axisH = ep ? 76 : 30;  // 有 episode 时空出底部画进度带
     const H = Math.max(260, (body.clientHeight || 600) - 4);
-    const lk = [W, H, window.devicePixelRatio, pvmVmIdx, pvmKey].join('|');
+    const lk = [W, H, window.devicePixelRatio, pvmVmIdx, pvmKey, ep ? ep.sandbox : ''].join('|');
     if (lk !== pvmLayoutKey) { prepCv(pvmCvEl, ctx, W, H); pvmLayoutKey = lk; }
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
@@ -5454,6 +5482,29 @@
     ctx.fillStyle = C.text;
     ctx.font = '11px Consolas, monospace';
     ctx.fillText(cfg.label + '  MB', x0 + 4, y0 + 14);
+    // episode 进度带：底部一条，gen 蓝 / tool 绿，与曲线共用横轴，游标处标第几步
+    if (ep) {
+      const by0 = y1 + 22, by1 = by0 + 14;
+      const stepSpans = (ep.spans || []).filter(s => s && s.s != null && s.e != null);
+      ctx.fillStyle = C.bandBg;
+      ctx.fillRect(x0, by0, x1 - x0, by1 - by0);
+      for (const s of stepSpans) {
+        if (s.e < t0 || s.s > t1) continue;
+        const px0 = Math.max(x0, xx(s.s)), px1 = Math.min(x1, xx(s.e));
+        if (px1 <= px0) continue;
+        ctx.fillStyle = s.t === 'tool' ? C.tool : C.gen;
+        ctx.globalAlpha = s.t === 'tool' ? 0.85 : 0.5;
+        ctx.fillRect(px0, by0 + 2, Math.max(1, px1 - px0), by1 - by0 - 4);
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = C.dim;
+      ctx.font = '9px Consolas, monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('episode ' + ep.issue_id.slice(-6) + ' s' + ep.sample_idx + ' · ' + ep.steps + ' 步 · ' +
+        (ep.stop_reason || '') + (ep.reward != null ? ' · reward ' + ep.reward : '') +
+        ' · ' + Math.round(ep.wall_s || 0) + 's', x0, by0 - 3);
+      ctx.textAlign = 'left';
+    }
     // 画曲线：guest 实线（gen 蓝），host 虚线（tool 绿）
     const plot = (pts, color, dash) => {
       ctx.strokeStyle = color;
@@ -5512,10 +5563,23 @@
     // 读数行
     const gpk = vm.guest ? (vm.guest.range[cfg.guest] || []) : [];
     const hpk = vm.host ? (vm.host.range[cfg.host] || []) : [];
+    let epRead = '';
+    if (ep && pvmCursorX != null && pvmCursorX >= x0 && pvmCursorX <= x1) {
+      const tCur = t0 + (pvmCursorX - x0) / (x1 - x0) * (t1 - t0);
+      const hit = (ep.spans || []).find(s => s.s <= tCur && tCur <= s.e);
+      if (hit) {
+        const cmd = String(hit.cmd || '').replace(/\s+/g, ' ').slice(0, 48);
+        epRead = ' · 第 ' + (hit.i + 1) + '/' + ep.steps + ' 步 ' +
+          (hit.t === 'tool' ? '工具' : '推理') + (cmd ? '：' + cmd : '');
+      } else {
+        const before = (ep.spans || []).filter(s => s.s <= tCur);
+        epRead = ' · 已过 ' + before.length + '/' + ep.steps + ' 步';
+      }
+    }
     memPerVmEl.querySelector('#pvmRead').textContent =
       'guest 峰值 ' + (gpk.length ? fmtMem(gpk[1]) : '—') + ' MB' +
       ' · host 峰值 ' + (hpk.length ? fmtMem(hpk[1]) : '—') + ' MB' +
-      (vm.has_guest && vm.has_host ? '' : ' · ⚠ 只有单侧采样');
+      (vm.has_guest && vm.has_host ? '' : ' · ⚠ 只有单侧采样') + epRead;
     // 字段列表：本沙箱两侧所有可比字段，点字段直接切换
     const list = memPerVmEl.querySelector('#pvmList');
     list.innerHTML = (pvmData ? pvmData.pairs : []).map(p => {
@@ -5568,6 +5632,141 @@
     if (pvmRaf) { cancelAnimationFrame(pvmRaf); pvmRaf = 0; }
     drawMemPerVm();
   });
+
+  /* ===== SWE 负载总览：全部 episode 的 guest 内存画像 =====
+     两种视图：by_issue（每 issue 一行，4 样本均值）/ by_episode（每 episode 一行）。
+     每行 = 堆叠占比条（各类内存 share）+ 已用均值 MB + 步数/墙钟/停止原因。 */
+  const memSweEl = document.createElement('div');
+  memSweEl.id = 'memSwe';
+  memSweEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>SWE 负载总览</b> <span class="dim" id="sweBuild"></span>' +
+      '<span class="mb-read" id="sweRead"></span>' +
+      '<select id="sweRoot" title="pervm 批次目录"></select>' +
+      '<select id="sweMode" title="聚合粒度">' +
+        '<option value="issue">按 issue（4 样本均值）</option>' +
+        '<option value="episode">按 episode（全部单条）</option>' +
+      '</select>' +
+      '<button class="btn" id="sweReload">重读</button>' +
+      '<button class="btn" id="sweClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-note" id="sweNote"></div>' +
+    '<div class="mb-legend" id="sweLegend"></div>' +
+    '<div class="mb-body" id="sweBody"></div>';
+  document.body.appendChild(memSweEl);
+  const SWE_COLORS = {
+    anon: '#5b9dff', cached: '#4ec9b0', slab: '#dcdcaa', shmem: '#c586c0',
+    mapped: '#9cdcfe', pagetables: '#d7ba7d', kstack: '#ce9178', sreclaim: '#8f9bb3',
+  };
+  let sweMode = 'issue';
+  let sweSort = 'used';
+  const SWE_SORTS = ['used', 'steps', 'wall_s', 'issue'];
+
+  function sweRootCandidates() { return pvmRootCandidates(); }
+
+  async function openMemSwe() {
+    memSweEl.style.display = 'flex';
+    for (const el of [memCmpEl, memBigEl, memVmEl, memGuestEl, memPairEl, memPerVmEl]) el.style.display = 'none';
+    memSweEl.querySelector('#sweBuild').textContent = '构建 ' + BUILD;
+    const sel = memSweEl.querySelector('#sweRoot');
+    let cands = sweRootCandidates();
+    try {
+      const st = await (await fetch('/api/status')).json();
+      if (st.boot_root && !cands.includes(String(st.boot_root))) cands.push(String(st.boot_root));
+    } catch (e) { /* noop */ }
+    sel.innerHTML = cands.map(p => '<option value="' + p + '">' + p + '</option>').join('');
+    if (!sel.options.length) {
+      memSweEl.querySelector('#sweNote').textContent = '没找到批次目录：先用「打开文件夹」选一个有 runs/ 与 per-vm/ 的目录。';
+      return;
+    }
+    if (!sweData || sweData.root !== sel.value) sweData = await fetchSweData(sel.value);
+    memSweEl.querySelector('#sweMode').value = sweMode;
+    drawMemSwe();
+  }
+
+  function drawMemSwe() {
+    const body = memSweEl.querySelector('#sweBody');
+    if (!sweData) {
+      body.innerHTML = '<div class="sw-hint">加载失败或目录不是 SWE pervm 布局。</div>';
+      return;
+    }
+    const fields = (sweData.fields || []).filter(f => SWE_COLORS[f.key]);
+    const rows = sweMode === 'issue'
+      ? sweData.by_issue.map(d => ({ k: d.issue_id, label: d.issue_id.slice(-6),
+          mean: d.mean_mb, share: d.share, steps: Math.round(d.steps),
+          wall: d.wall_s, n: d.n, stop: '', raw: d }))
+      : sweData.episodes.map(e => ({ k: e.issue_id + '#' + e.sample_idx,
+          label: e.issue_id.slice(-6) + ' s' + e.sample_idx,
+          mean: e.mem.mean_mb, share: e.mem.share, steps: e.steps,
+          wall: e.wall_s, n: e.mem.n_samples, stop: e.stop_reason || '', raw: e }));
+    // 排序
+    const sv = (r) => sweSort === 'issue' ? r.k
+      : sweSort === 'steps' ? -(r.steps || 0)
+      : sweSort === 'wall_s' ? -(r.wall || 0)
+      : -(r.mean.used || 0);
+    rows.sort((a, b) => { const x = sv(a), y = sv(b); return typeof x === 'string' ? x.localeCompare(y) : x - y; });
+
+    const maxUsed = Math.max(1, ...rows.map(r => r.mean.used || 0));
+    // 图例 + 排序按钮
+    memSweEl.querySelector('#sweLegend').innerHTML =
+      '<span>颜色 = guest /proc 内存类别，条长 = 占「已用」比例</span>' +
+      fields.map(f => '<span><i class="ln" style="border-color:' + SWE_COLORS[f.key] + '"></i>' + f.label + '</span>').join('') +
+      '<span class="dim">点击排序：</span>' +
+      SWE_SORTS.map(s => '<button class="btn' + (s === sweSort ? ' active' : '') + '" data-swe-sort="' + s + '">' +
+        ({ used: '已用', steps: '步数', wall_s: '墙钟', issue: '编号' })[s] + '</button>').join('');
+    memSweEl.querySelectorAll('button[data-swe-sort]').forEach(b => {
+      b.onclick = () => { sweSort = b.getAttribute('data-swe-sort'); drawMemSwe(); };
+    });
+    memSweEl.querySelector('#sweNote').textContent =
+      '共 ' + sweData.n + ' episode / ' + sweData.n_mem + ' 条有 guest 采样 · ' +
+      (sweMode === 'issue' ? '每 issue 取 ' : '') + 'guest 各类内存均值占比（anon/cached/slab/… = MemTotal−MemAvailable 的构成）。' +
+      ' 注意页缓存与匿名页在宿主侧都算匿名映射，直接对比 fc PSS 会重叠；这里只看 guest 自身画像。';
+
+    // 每行：堆叠占比条 + 已用 MB（绝对长度按全局 maxUsed 的第二条细条）+ 步数/墙钟
+    body.innerHTML = rows.map(r => {
+      const used = r.mean.used || 0;
+      const segs = fields.map(f => {
+        const sh = r.share[f.key] || 0;
+        const mb = r.mean[f.key] || 0;
+        if (sh < 0.002) return '';
+        return '<span style="display:inline-block;width:' + (sh * 100).toFixed(1) + '%;background:' +
+          SWE_COLORS[f.key] + ';height:13px;float:left" title="' + f.label + ' ' + mb + ' MB (' + (sh * 100).toFixed(1) + '%)"></span>';
+      }).join('');
+      const w = (used / maxUsed * 100).toFixed(1);
+      return '<div class="sw-row" data-swe-k="' + r.k + '">' +
+        '<span class="sw-k" title="' + r.k + '">' + r.label + '</span>' +
+        '<div class="sw-bar" style="position:relative">' +
+          '<div style="height:13px;background:var(--band-bg,#1b2130);border-radius:2px;overflow:hidden">' + segs + '</div>' +
+          '<div style="height:3px;margin-top:2px;background:var(--band-bg,#1b2130)">' +
+            '<div style="height:3px;width:' + w + '%;background:var(--dim,#7a8699)"></div></div>' +
+        '</div>' +
+        '<span class="sw-num">' + used.toFixed(0) + ' MB · ' + r.steps + ' 步 · ' + Math.round(r.wall || 0) + 's' +
+          (r.stop ? ' · ' + r.stop : '') + '</span>' +
+      '</div>';
+    }).join('');
+    const nMem = rows.filter(r => r.n).length;
+    const avgUsed = rows.length ? rows.reduce((a, r) => a + (r.mean.used || 0), 0) / rows.length : 0;
+    memSweEl.querySelector('#sweRead').textContent =
+      rows.length + ' 行 · 有采样 ' + nMem + ' · 已用均值 ' + avgUsed.toFixed(0) + ' MB · 排序 ' + sweSort;
+  }
+
+  memSweEl.querySelector('#sweMode').addEventListener('change', (e) => { sweMode = e.target.value; drawMemSwe(); });
+  memSweEl.querySelector('#sweRoot').addEventListener('change', async (e) => {
+    sweData = await fetchSweData(e.target.value);
+    drawMemSwe();
+  });
+  memSweEl.querySelector('#sweReload').addEventListener('click', async () => {
+    const v = memSweEl.querySelector('#sweRoot').value;
+    if (v) sweData = await fetchSweData(v);
+    drawMemSwe();
+  });
+  memSweEl.querySelector('#sweClose').addEventListener('click', () => { memSweEl.style.display = 'none'; });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memSweEl.style.display !== 'none') {
+      e.stopPropagation();
+      memSweEl.style.display = 'none';
+    }
+  }, true);
 
   /* 整目录一键加载：扫描当前根目录下所有 run，每路配一条 lane，自动挂
      轨迹（applyPayload）、host memlog 与 guest.csv，然后打开 guest 视图。
@@ -6552,6 +6751,20 @@
       })) : []
     })),
     openMemPerVm,
+    openMemSwe, sweView: () => ({
+      open: memSweEl.style.display !== 'none',
+      mode: sweMode, sort: sweSort,
+      n: sweData ? sweData.n : 0, nMem: sweData ? sweData.n_mem : 0,
+      nIssue: sweData ? sweData.by_issue.length : 0,
+      rows: [...memSweEl.querySelectorAll('#sweBody .sw-row')].map(r => ({
+        k: r.getAttribute('data-swe-k'),
+        txt: r.querySelector('.sw-num').textContent,
+        segs: [...r.querySelectorAll('.sw-bar [title]')].map(s => s.getAttribute('title')),
+      })),
+      read: memSweEl.querySelector('#sweRead').textContent,
+    }),
+    sweSetMode: (m) => { sweMode = m; memSweEl.querySelector('#sweMode').value = m; return drawMemSwe(); },
+    sweSetSort: (s) => { sweSort = s; return drawMemSwe(); },
     pvmState: () => ({
       open: memPerVmEl.style.display !== 'none',
       roots: [...memPerVmEl.querySelectorAll('#pvmRoot option')].map(o => o.value),

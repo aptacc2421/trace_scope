@@ -98,6 +98,7 @@ VM_CACHE: dict[str, tuple] = {}      # path -> ((mtime_ns, size, metric), json_b
 GUEST_CACHE: dict[str, tuple] = {}   # path -> ((mtime_ns, size), json_bytes)
 RUN_GUEST_CACHE: dict[str, tuple] = {}  # run 目录 -> ((sig), json_bytes)
 PERVM_CACHE: dict[str, tuple] = {}   # pervm 批次目录 -> ((index mtime, 文件数), json_bytes)
+SWE_CACHE: dict[str, tuple] = {}     # swe 批次目录 -> ((records mtime, 文件数), json_bytes)
 
 
 def memlog_json(path_str: str, ref_ms=None) -> bytes:
@@ -158,6 +159,29 @@ def pervm_json(path_str: str) -> bytes:
     if len(PERVM_CACHE) >= 6:
         PERVM_CACHE.pop(next(iter(PERVM_CACHE)))
     PERVM_CACHE[str(p)] = (sig, body)
+    return body
+
+
+def swe_json(path_str: str) -> bytes:
+    """SWE 负载总览：按 episode 聚合 guest 内存均值/占比，整个目录解析一次并缓存。
+
+    指纹 = records/*.json 的总大小+文件数 + guest.csv 文件数；跑批期目录静态。
+    """
+    p = Path(path_str).expanduser().resolve()
+    runs = p / "runs"
+    if not runs.is_dir():
+        raise ValueError(f"目录不存在或无 runs/: {p}")
+    recs = list(runs.glob("*/records/*.json"))
+    sig = (len(recs), sum(f.stat().st_size for f in recs),
+           len(list((p / "per-vm").glob("*/guest.csv"))) if (p / "per-vm").is_dir() else 0)
+    hit = SWE_CACHE.get(str(p))
+    if hit and hit[0] == sig:
+        return hit[1]
+    d = scope_data.load_swe_summary(str(p))
+    body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(SWE_CACHE) >= 6:
+        SWE_CACHE.pop(next(iter(SWE_CACHE)))
+    SWE_CACHE[str(p)] = (sig, body)
     return body
 
 
@@ -348,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_bytes(guest_json(q.get("path", ""), paths))
             elif u.path == "/api/pervm/load":
                 self._json_bytes(pervm_json(q.get("path", "")))
+            elif u.path == "/api/swe/load":
+                self._json_bytes(swe_json(q.get("path", "")))
             elif u.path in ("/", "/index.html"):
                 self._index()
             elif u.path == "/data.js":

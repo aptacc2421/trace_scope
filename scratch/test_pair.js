@@ -65,7 +65,7 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollb
   })`);
   console.log('ui ' + JSON.stringify(ui));
   if (!ui.perBtn || !ui.perBtn.startsWith('per')) throw new Error('per 按钮缺失');
-  if (JSON.stringify(ui.perMenuBtns) !== JSON.stringify(['fc', 'guest', 'pair', 'pervm'])) throw new Error('per 菜单四项不对');
+  if (JSON.stringify(ui.perMenuBtns) !== JSON.stringify(['fc', 'guest', 'pair', 'pervm', 'swe'])) throw new Error('per 菜单五项不对');
   if (ui.oldVmBtn || ui.oldGuestBtn) throw new Error('旧按钮仍在');
   if (ui.vmTitle !== 'per-fc 视图') throw new Error('面板未改名: ' + ui.vmTitle);
 
