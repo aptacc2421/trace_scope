@@ -1182,13 +1182,18 @@ def load_pervm(root: str, max_points: int = 900) -> dict:
 SWE_MEM_FIELDS = [
     ("AnonPages", "anon", "匿名页"),
     ("Cached", "cached", "页缓存"),
+    ("Buffers", "buffers", "块缓冲"),
     ("Slab", "slab", "Slab"),
-    ("Shmem", "shmem", "共享内存"),
-    ("Mapped", "mapped", "Mapped"),
     ("PageTables", "pagetables", "页表"),
     ("KernelStack", "kstack", "内核栈"),
-    ("SReclaimable", "sreclaim", "可回收 Slab"),
+    ("Shmem", "shmem", "共享内存（含于页缓存）"),
+    ("Mapped", "mapped", "Mapped（含于页缓存）"),
+    ("SReclaimable", "sreclaim", "可回收 Slab（含于 Slab）"),
 ]
+
+# 可叠加字段：彼此不重叠。Shmem/Mapped 是 Cached 的子集，SReclaimable 是 Slab 的子集，
+# 只作为细项在提示中给出，不参与堆叠条，否则条长会重复计算并超过 100%。
+SWE_STACK_KEYS = ("anon", "cached", "buffers", "slab", "pagetables", "kstack")
 
 
 def load_swe_summary(root: str) -> dict:
@@ -1198,7 +1203,8 @@ def load_swe_summary(root: str) -> dict:
     4 条样本并行、时间窗重叠，started_at 无法区分；末帧时间与结束时刻一一对应（实测 42/48，
     未配对的 6 条是 000803 无 guest 采样）。每个 episode 在配对 guest.csv 上统计：
       - mean_mb / peak_mb：各 /proc 字段在 episode 时间窗内的均值与峰值（kB→MB）
-      - share：各类占「已用」(MemTotal−MemAvailable) 的比例，用于堆叠占比图
+      - share：各类占「已用」(MemTotal−MemAvailable) 的比例（字段间有重叠）
+      - stack：非重叠字段（anon/cached/buffers/slab/pagetables/kstack）的归一占比，用于堆叠条
       - spans：gen/tool span（复用 steps_to_spans），用于逐 VM 面板叠加 episode 进度
     返回 episodes（按 issue/sample 排序）+ by_issue 聚合。
     """
@@ -1298,7 +1304,7 @@ def load_swe_summary(root: str) -> dict:
     out_eps = []
     for e in eps:
         g = e["mem"]
-        mem = {"mean_mb": {}, "peak_mb": {}, "share": {}, "n_samples": 0}
+        mem = {"mean_mb": {}, "peak_mb": {}, "share": {}, "stack": {}, "n_samples": 0}
         if g:
             used = g["seq"]["_used"]
             n = len(used)
@@ -1312,6 +1318,9 @@ def load_swe_summary(root: str) -> dict:
                 mem["mean_mb"][key] = round(mv, 2)
                 mem["peak_mb"][key] = round(max(vals), 2) if vals else 0.0
                 mem["share"][key] = round(mv / mean_used, 4) if mean_used > 0 else 0.0
+            stack_total = sum(mem["mean_mb"].get(k, 0.0) for k in SWE_STACK_KEYS)
+            for key in SWE_STACK_KEYS:
+                mem["stack"][key] = round(mem["mean_mb"].get(key, 0.0) / stack_total, 4) if stack_total > 0 else 0.0
         out_eps.append({
             "issue_id": e["issue_id"], "sample_idx": e["sample_idx"],
             "start": e["start"], "end": e["end"],
@@ -1330,7 +1339,7 @@ def load_swe_summary(root: str) -> dict:
     for e in out_eps:
         k = e["issue_id"] or "(unknown)"
         d = by_issue.setdefault(k, {"issue_id": k, "n": 0, "n_mem": 0,
-                                    "mean_mb": {}, "share": {},
+                                    "mean_mb": {}, "share": {}, "stack": {},
                                     "steps": 0.0, "wall_s": 0.0, "peak_mem_mb": 0.0})
         d["n"] += 1
         if e["mem"]["n_samples"]:
@@ -1350,6 +1359,9 @@ def load_swe_summary(root: str) -> dict:
             d["mean_mb"][key] = round(d["mean_mb"][key] / max(d["n_mem"], 1), 2)
         for key in list(d["share"]):
             d["share"][key] = round(d["share"][key] / max(d["n_mem"], 1), 4)
+        stack_total = sum(d["mean_mb"].get(k, 0.0) for k in SWE_STACK_KEYS)
+        for key in SWE_STACK_KEYS:
+            d["stack"][key] = round(d["mean_mb"].get(key, 0.0) / stack_total, 4) if stack_total > 0 else 0.0
     return {"root": str(p), "episodes": out_eps,
             "by_issue": [by_issue[k] for k in sorted(by_issue)],
             "fields": [{"src": s, "key": k, "label": lab} for s, k, lab in SWE_MEM_FIELDS],

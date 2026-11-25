@@ -72,6 +72,18 @@ const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollb
     check('按 episode 48 行', v.rows.length === 48, 'rows=' + v.rows.length);
     check('episode 行含 stop_reason', v.rows.some(r => /done|timeout|limit|error/i.test(r.txt)), v.rows[0] && v.rows[0].txt);
 
+    // 002980 s1：页缓存是主要成分，堆叠条必须出现页缓存段且宽度不溢出
+    const t = v.rows.find(r => r.k === 'format-code-task-002980#1');
+    check('002980 s1 行存在', !!t, t && t.txt);
+    check('002980 s1 显示页缓存段', !!t && t.segs.some(s => /页缓存 \d/.test(s)), t && JSON.stringify(t.segs));
+    check('002980 s1 堆叠不溢出', !!t && t.segw.reduce((a, b) => a + b, 0) <= 100.5,
+      t && JSON.stringify(t.segw));
+    check('细项提示包含 Shmem/Mapped/可回收 Slab', !!t && /共享内存/.test(t.detail || '') && /Mapped/.test(t.detail || '') && /可回收/.test(t.detail || ''),
+      t && t.detail);
+    await send('Page.captureScreenshot', { format: 'png' }, sessionId).then(r => {
+      fs.writeFileSync(path.join(__dirname, 'shot_swe_episode.png'), Buffer.from(r.data, 'base64'));
+    });
+
     // 排序切换
     await ev(`window.scopeDebug.sweSetSort('steps')`);
     await sleep(300);
