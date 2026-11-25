@@ -5671,24 +5671,53 @@
   let sweScaleMax = 1;
   const SWE_SORTS = ['used', 'steps', 'wall_s', 'issue'];
 
+  let sweRootPicked = '';  // 用户/自动选中的批次目录，重开面板时沿用
   function sweRootCandidates() { return pvmRootCandidates(); }
+  // 探测同批数据：当前根、启动根及其父目录都扫一遍，收集有 runs/*/records 的目录。
+  async function discoverSweRoots() {
+    const seeds = [];
+    const push = (x) => { if (x && !seeds.includes(x)) seeds.push(x); };
+    for (const p of sweRootCandidates()) push(p);
+    if (sweRootPicked) push(sweRootPicked);
+    try {
+      const st = await (await fetch('/api/status')).json();
+      if (st.boot_root) {
+        push(st.boot_root);
+        const b = String(st.boot_root).replace(/[\\\/]+$/, '');
+        push(b.replace(/[\\\/][^\\\/]+$/, ''));  // 父目录：webdev 的兄弟里有 pervm-12
+      }
+    } catch (e) { /* noop */ }
+    const found = [];
+    for (const s of seeds) {
+      try {
+        const j = await (await fetch('/api/swe/roots?path=' + encodeURIComponent(s))).json();
+        for (const r of (j.roots || [])) if (!found.includes(r)) found.push(r);
+      } catch (e) { /* noop */ }
+    }
+    // pervm/swe 命名优先（服务端已排一次，这里多路合并后再排一次）
+    const prio = (p) => { const n = p.toLowerCase(); return n.includes('pervm') ? 0 : n.includes('swe') ? 1 : 2; };
+    found.sort((a, b) => prio(a) - prio(b) || a.localeCompare(b));
+    return found;
+  }
 
   async function openMemSwe() {
     memSweEl.style.display = 'flex';
     for (const el of [memCmpEl, memBigEl, memVmEl, memGuestEl, memPairEl, memPerVmEl]) el.style.display = 'none';
     memSweEl.querySelector('#sweBuild').textContent = '构建 ' + BUILD;
     const sel = memSweEl.querySelector('#sweRoot');
-    let cands = sweRootCandidates();
-    try {
-      const st = await (await fetch('/api/status')).json();
-      if (st.boot_root && !cands.includes(String(st.boot_root))) cands.push(String(st.boot_root));
-    } catch (e) { /* noop */ }
+    const cands = await discoverSweRoots();
     sel.innerHTML = cands.map(p => '<option value="' + p + '">' + p + '</option>').join('');
     if (!sel.options.length) {
-      memSweEl.querySelector('#sweNote').textContent = '没找到批次目录：先用「打开文件夹」选一个有 runs/ 与 per-vm/ 的目录。';
+      sweData = null;
+      memSweEl.querySelector('#sweNote').textContent = '没找到 SWE 批次目录：先用「打开文件夹」选一个有 runs/*/records 与 per-vm/*/guest.csv 的目录。';
+      drawMemSwe();
       return;
     }
-    if (!sweData || sweData.root !== sel.value) sweData = await fetchSweData(sel.value);
+    // 优先沿用上次选中的目录，否则取列表第一个（服务端已按 pervm/swe 优先排序）
+    const pick = cands.includes(sweRootPicked) ? sweRootPicked : cands[0];
+    sel.value = pick;
+    sweRootPicked = pick;
+    if (!sweData || sweData.root !== pick) sweData = await fetchSweData(pick);
     memSweEl.querySelector('#sweMode').value = sweMode;
     drawMemSwe();
   }
@@ -5696,7 +5725,8 @@
   function drawMemSwe() {
     const body = memSweEl.querySelector('#sweBody');
     if (!sweData) {
-      body.innerHTML = '<div class="sw-hint">加载失败或目录不是 SWE pervm 布局。</div>';
+      body.innerHTML = '<div class="sw-hint">当前选中的目录读不出 SWE 数据（需 runs/*/records 与 per-vm/*/guest.csv）。' +
+        '可在上方下拉换一个批次，或点「重读」重新探测。</div>';
       return;
     }
     const allFields = (sweData.fields || []).filter(f => SWE_COLORS[f.key]);
@@ -5788,12 +5818,25 @@
 
   memSweEl.querySelector('#sweMode').addEventListener('change', (e) => { sweMode = e.target.value; drawMemSwe(); });
   memSweEl.querySelector('#sweRoot').addEventListener('change', async (e) => {
-    sweData = await fetchSweData(e.target.value);
+    sweRootPicked = e.target.value;
+    sweData = await fetchSweData(sweRootPicked);
     drawMemSwe();
   });
   memSweEl.querySelector('#sweReload').addEventListener('click', async () => {
     const v = memSweEl.querySelector('#sweRoot').value;
-    if (v) sweData = await fetchSweData(v);
+    if (v) { sweRootPicked = v; sweData = await fetchSweData(v); }
+    if (!sweData) {
+      // 当前目录读不出数据：重新探测候选，自动选一个可读的批次
+      const cands = await discoverSweRoots();
+      memSweEl.querySelector('#sweRoot').innerHTML =
+        cands.map(p => '<option value="' + p + '">' + p + '</option>').join('');
+      const pick = cands.includes(sweRootPicked) ? sweRootPicked : cands[0];
+      if (pick) {
+        memSweEl.querySelector('#sweRoot').value = pick;
+        sweRootPicked = pick;
+        sweData = await fetchSweData(pick);
+      }
+    }
     drawMemSwe();
   });
   memSweEl.querySelector('#sweClose').addEventListener('click', () => { memSweEl.style.display = 'none'; });
@@ -6803,7 +6846,10 @@
         detail: r.querySelector('.sw-num').getAttribute('title'),
       })),
       read: memSweEl.querySelector('#sweRead').textContent,
+      root: memSweEl.querySelector('#sweRoot').value,
+      roots: [...memSweEl.querySelectorAll('#sweRoot option')].map(o => o.value),
     }),
+    discoverSweRoots,
     sweSetMode: (m) => { sweMode = m; memSweEl.querySelector('#sweMode').value = m; return drawMemSwe(); },
     sweSetSort: (s) => { sweSort = s; return drawMemSwe(); },
     pvmState: () => ({

@@ -185,6 +185,39 @@ def swe_json(path_str: str) -> bytes:
     return body
 
 
+def swe_roots_json(path_str: str) -> bytes:
+    """探测 path 自身及其一级子目录里哪些是 SWE 批次目录（有 runs/*/records/*.json）。
+    只做文件存在性检查，不解析内容；供 SWE 面板自动发现数据源。按名字优先级排序，
+    pervm/swe 命名排在最前，保证默认落在最完整的那批。"""
+    if not path_str:
+        return json.dumps({"base": "", "roots": []}, ensure_ascii=False).encode("utf-8")
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_dir():
+        return json.dumps({"base": str(p), "roots": []}, ensure_ascii=False).encode("utf-8")
+    cands = [p]
+    try:
+        cands += [c for c in sorted(p.iterdir()) if c.is_dir() and not c.name.startswith(".")]
+    except PermissionError:
+        pass
+    roots = []
+    for d in cands:
+        runs = d / "runs"
+        if not runs.is_dir():
+            continue
+        try:
+            if any(runs.glob("*/records/*.json")):
+                roots.append(str(d))
+        except OSError:
+            continue
+
+    def prio(s: str) -> tuple:
+        n = Path(s).name.lower()
+        return (0 if "pervm" in n else 1 if "swe" in n else 2, s)
+
+    roots.sort(key=prio)
+    return json.dumps({"base": str(p), "roots": roots}, ensure_ascii=False).encode("utf-8")
+
+
 def _guest_sig(paths: list) -> tuple:
     """一组 guest.csv 的 (mtime,size) 指纹，任一变化即失效。"""
     sig = []
@@ -374,6 +407,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_bytes(pervm_json(q.get("path", "")))
             elif u.path == "/api/swe/load":
                 self._json_bytes(swe_json(q.get("path", "")))
+            elif u.path == "/api/swe/roots":
+                self._json_bytes(swe_roots_json(q.get("path", "")))
             elif u.path in ("/", "/index.html"):
                 self._index()
             elif u.path == "/data.js":
