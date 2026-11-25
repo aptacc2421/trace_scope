@@ -181,6 +181,10 @@
   #memSwe .sw-num { width: 250px; flex: 0 0 250px; text-align: right; padding-left: 8px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #memSwe .sw-k { width: 190px; flex: 0 0 190px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 8px; color: var(--text); }
   #memSwe .sw-hint { color: var(--dim); }
+  #memSwe .mb-axis { display: flex; align-items: center; height: 18px; font: 10px var(--mono); color: var(--dim); border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #memSwe .mb-axis .sw-scale { flex: 1; position: relative; height: 18px; }
+  #memSwe .mb-axis .sw-tick { position: absolute; top: 0; height: 18px; border-left: 1px solid var(--border); padding-left: 3px; white-space: nowrap; }
+  #memSwe .sw-track { height: 100%; background: rgba(255, 255, 255, .09); }
   #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h, #memPair .mb-h, #memPerVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
   #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read, #memPair .mb-read, #memPerVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
   #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body, #memPerVm .mb-body { flex: 1; min-height: 0; }
@@ -5652,6 +5656,7 @@
     '</div>' +
     '<div class="mb-note" id="sweNote"></div>' +
     '<div class="mb-legend" id="sweLegend"></div>' +
+    '<div class="mb-axis" id="sweAxis"></div>' +
     '<div class="mb-body" id="sweBody"></div>';
   document.body.appendChild(memSweEl);
   const SWE_COLORS = {
@@ -5663,6 +5668,7 @@
   const SWE_DETAIL_KEYS = ['shmem', 'mapped', 'sreclaim'];
   let sweMode = 'issue';
   let sweSort = 'used';
+  let sweScaleMax = 1;
   const SWE_SORTS = ['used', 'steps', 'wall_s', 'issue'];
 
   function sweRootCandidates() { return pvmRootCandidates(); }
@@ -5696,14 +5702,7 @@
     const allFields = (sweData.fields || []).filter(f => SWE_COLORS[f.key]);
     const stackFields = SWE_STACK_KEYS.map(k => allFields.find(f => f.key === k)).filter(Boolean);
     const detailFields = SWE_DETAIL_KEYS.map(k => allFields.find(f => f.key === k)).filter(Boolean);
-    // 兼容旧缓存：没有 stack 字段时按非重叠字段的 mean_mb 现场归一。
-    const stackOf = (r) => {
-      if (r.stack) return r.stack;
-      const total = SWE_STACK_KEYS.reduce((a, k) => a + (r.mean[k] || 0), 0);
-      const out = {};
-      for (const k of SWE_STACK_KEYS) out[k] = total > 0 ? (r.mean[k] || 0) / total : 0;
-      return out;
-    };
+    // 横轴按 mean_mb 绝对值画，不再依赖服务端的 stack 归一字段，旧缓存同样适用。
     const rows = sweMode === 'issue'
       ? sweData.by_issue.map(d => ({ k: d.issue_id, label: d.issue_id.slice(-6),
           mean: d.mean_mb, share: d.share, stack: d.stack, steps: Math.round(d.steps),
@@ -5720,9 +5719,15 @@
     rows.sort((a, b) => { const x = sv(a), y = sv(b); return typeof x === 'string' ? x.localeCompare(y) : x - y; });
 
     const maxUsed = Math.max(1, ...rows.map(r => r.mean.used || 0));
+    const axis = niceTicks(maxUsed, 4);
+    sweScaleMax = axis.top;
+    memSweEl.querySelector('#sweAxis').innerHTML =
+      '<span class="sw-k"></span><div class="sw-scale">' +
+      axis.ticks.map(v => '<span class="sw-tick" style="left:' + (v / axis.top * 100).toFixed(2) + '%">' + v + '</span>').join('') +
+      '</div><span class="sw-num"></span>';
     // 图例 + 排序按钮
     memSweEl.querySelector('#sweLegend').innerHTML =
-      '<span>颜色 = guest /proc 内存类别，条长 = 非重叠字段相对构成</span>' +
+      '<span>颜色 = guest /proc 内存类别，横轴 = 内存 MB（满格 ' + axis.top + ' MB）</span>' +
       stackFields.map(f => '<span><i class="ln" style="border-color:' + SWE_COLORS[f.key] + '"></i>' + f.label + '</span>').join('') +
       '<span class="dim">细项（与上面重叠，仅提示可见）：' + detailFields.map(f => f.label).join(' / ') + '</span>' +
       '<span class="dim">点击排序：</span>' +
@@ -5733,33 +5738,41 @@
     });
     memSweEl.querySelector('#sweNote').textContent =
       '共 ' + sweData.n + ' episode / ' + sweData.n_mem + ' 条有 guest 采样 · ' +
-      (sweMode === 'issue' ? '每 issue 取 ' : '') + 'guest 内存均值。条长只用非重叠字段（anon/cached/buffers/slab/pagetables/kstack）归一；' +
-      '右侧 MB = MemTotal−MemAvailable 均值。Shmem/Mapped/SReclaimable 是 Cached/Slab 的子集，只在悬浮提示中给出。' +
+      (sweMode === 'issue' ? '每 issue 取 ' : '') + 'guest 内存均值。横轴统一按 MB：灰轨道长度 = 已用（MemTotal−MemAvailable）均值，' +
+      '彩色段 = 主要内存类别（anon/cached/buffers/slab/pagetables/kstack）的实际 MB，轨道内留白 = 其余内存与估算差额。' +
+      '这些类别字段间可能有交叉，合计有机会超过已用；超出部分按轨道截断，并在悬浮提示里标出。' +
+      '悬浮提示给两种占比：构成占比的分母是上述类别之和，已用占比的分母是右侧 MB。' +
+      'Shmem/Mapped/SReclaimable 是 Cached/Slab 的子集，只在悬浮提示中给出。' +
       '宿主侧页缓存与匿名页都算匿名映射，直接对比 fc PSS 会重叠。';
 
-    // 每行：堆叠占比条 + 已用 MB（绝对长度按全局 maxUsed 的第二条细条）+ 步数/墙钟
+    // 每行：统一内存横轴上的堆叠条（灰轨道=已用，彩色段=非重叠字段实际 MB）+ 步数/墙钟
     body.innerHTML = rows.map(r => {
       const used = r.mean.used || 0;
-      const stack = stackOf(r);
+      const trackPct = used > 0 ? Math.min(100, used / axis.top * 100) : 0;
+      const stackSum = SWE_STACK_KEYS.reduce((a, k) => a + (r.mean[k] || 0), 0);
       let segUsed = 0;
-      const segs = stackFields.map(f => {
-        const sh = stack[f.key] || 0;
+      const segs = used > 0 ? stackFields.map(f => {
         const mb = r.mean[f.key] || 0;
-        if (sh < 0.002) return '';
-        const w = Math.min(sh * 100, 100 - segUsed);
+        if (mb <= 0) return '';
+        const sh = stackSum > 0 ? mb / stackSum : 0;
+        const rawW = mb / used * 100;
+        const w = Math.min(100 - segUsed, rawW);
+        if (w < 0.01) return '';
+        const clipped = rawW > w + 0.01;
         segUsed += w;
         const ofUsed = ((r.share && r.share[f.key]) || 0) * 100;
-        return '<span style="display:inline-block;width:' + w.toFixed(1) + '%;background:' +
-          SWE_COLORS[f.key] + ';height:13px;float:left" title="' + f.label + ' ' + mb + ' MB · 构成 ' +
-          (sh * 100).toFixed(1) + '% · 占已用 ' + ofUsed.toFixed(1) + '%"></span>';
-      }).join('');
-      const w = (used / maxUsed * 100).toFixed(1);
+        return '<span style="display:inline-block;width:' + w.toFixed(2) + '%;background:' +
+          SWE_COLORS[f.key] + ';height:13px;float:left" title="' + f.label + ' ' + mb + ' MB' +
+          ' · 构成 ' + (sh * 100).toFixed(1) + '%（分母 ' + stackSum.toFixed(1) + ' MB）' +
+          ' · 占已用 ' + ofUsed.toFixed(1) + '%（分母 ' + used.toFixed(1) + ' MB）' +
+          (clipped ? ' · 段宽已截断（字段合计超过已用）' : '') + '"></span>';
+      }).join('') : '';
       return '<div class="sw-row" data-swe-k="' + r.k + '">' +
         '<span class="sw-k" title="' + r.k + '">' + r.label + '</span>' +
         '<div class="sw-bar" style="position:relative">' +
-          '<div style="height:13px;background:var(--band-bg,#1b2130);border-radius:2px;overflow:hidden">' + segs + '</div>' +
-          '<div style="height:3px;margin-top:2px;background:var(--band-bg,#1b2130)">' +
-            '<div style="height:3px;width:' + w + '%;background:var(--dim,#7a8699)"></div></div>' +
+          '<div style="height:13px;background:var(--band-bg,#1b2130);border-radius:2px;overflow:hidden">' +
+            '<div class="sw-track" style="width:' + trackPct.toFixed(2) + '%">' + segs + '</div>' +
+          '</div>' +
         '</div>' +
         '<span class="sw-num" title="' + detailFields.map(f =>
           f.label + ' ' + (r.mean[f.key] || 0) + ' MB').join(' · ') + '">' +
@@ -6779,11 +6792,14 @@
       mode: sweMode, sort: sweSort,
       n: sweData ? sweData.n : 0, nMem: sweData ? sweData.n_mem : 0,
       nIssue: sweData ? sweData.by_issue.length : 0,
+      scaleMax: sweScaleMax,
+      axis: [...memSweEl.querySelectorAll('#sweAxis .sw-tick')].map(s => s.textContent),
       rows: [...memSweEl.querySelectorAll('#sweBody .sw-row')].map(r => ({
         k: r.getAttribute('data-swe-k'),
         txt: r.querySelector('.sw-num').textContent,
         segs: [...r.querySelectorAll('.sw-bar [title]')].map(s => s.getAttribute('title')),
         segw: [...r.querySelectorAll('.sw-bar [title]')].map(s => parseFloat(s.style.width) || 0),
+        trackw: parseFloat(r.querySelector('.sw-track').style.width) || 0,
         detail: r.querySelector('.sw-num').getAttribute('title'),
       })),
       read: memSweEl.querySelector('#sweRead').textContent,
