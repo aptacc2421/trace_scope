@@ -970,3 +970,209 @@ def load_memlog_vm(path_str: str, metric: str = "rss", max_points: int = 520) ->
                  "rss": max((p[1] for p in agg["rss"]), default=0)},
         "agg": agg, "vms": out_vms,
     }
+
+
+# ── pervm-12：逐沙箱 guest/host 双视角采样 ──────────────────────────
+# 布局（root 为一个 pervm 批次目录）：
+#   index.jsonl         每行 {sandbox, pid, ts, started_at, grow_kb}，sandbox↔fc pid 配对
+#   per-vm/<sandbox>/guest.csv   guest 注入读 /proc，1 Hz，列 = /proc/meminfo + vmstat（kB/计数）
+#   host/<pid>.csv              宿主 fc 进程 smaps，1 Hz，列 = *_mb + threads
+#   runs/<issue>/records/*.json  轨迹，ep.template 不是 sandbox；靠采样时间窗落到轨迹
+# 两侧字段单位不同（guest 多 kB、host 全 MB），解析层统一换算到 MB，前端不必分支。
+
+# guest.csv 里按 kB 计、需 /1024 换 MB 的列；其余（pgfault/ctxt 等计数）保持原值
+PERVM_GUEST_KB = {
+    "MemTotal", "MemAvailable", "MemFree", "Cached", "Buffers", "Shmem",
+    "AnonPages", "Mapped", "Slab", "SReclaimable", "KernelStack", "PageTables",
+    "SwapTotal", "SwapFree",
+}
+# 前端对照面板的字段分组：guest 侧取什么、host 侧取什么、口径说明
+PERVM_PAIRS = [
+    {"key": "used", "guest": "used_mb", "host": "rss_mb", "label": "已用 / RSS MB",
+     "note": "guest=MemTotal−MemAvailable（guest 视角已用）；host=fc 进程常驻集 RSS。guest 的页缓存在宿主也是匿名页，两者同量级但不等价。"},
+    {"key": "anon", "guest": "AnonPages_mb", "host": "pss_anon_mb", "label": "匿名页 / PSS-anon MB",
+     "note": "guest=guest /proc AnonPages；host=fc smaps 匿名映射 PSS。双方统一 MB 后对照，差值主要是页表与 fc 自身开销。"},
+    {"key": "file", "guest": "Cached_mb", "host": "pss_file_mb", "label": "页缓存 / PSS-file MB",
+     "note": "guest=guest 页缓存 Cached；host=fc 文件映射 PSS（ublk/磁盘映射）。guest 侧看不到这块，量纲对照仅供参考。"},
+    {"key": "shmem", "guest": "Shmem_mb", "host": "pss_shmem_mb", "label": "共享内存 / PSS-shmem MB",
+     "note": "guest=/proc Shmem；host=fc smaps 共享映射 PSS。"},
+    {"key": "swap", "guest": "SwapFree_mb", "host": "swap_mb", "label": "swap MB",
+     "note": "guest=剩余 swap；host=fc swap 占用。注意口径方向相反（剩余 vs 占用）。"},
+]
+
+
+def _pervm_csv(path: Path, kb_cols: set, max_points: int) -> dict:
+    """解析一份 pervm CSV（第一列 ts=epoch 秒）→ {series,range,t0,t1,n,fields}。
+
+    kb_cols 里的列 /1024 换 MB，字段名加 _mb 后缀以便与 host 侧区分；其余保持原名原值。
+    ts 统一 epoch ms。峰值用 _downsample_minmax 保留。
+    """
+    series: dict[str, list] = {}
+    n = 0
+    t0 = t1 = None
+    with open(path, encoding="utf-8", errors="replace", newline="") as f:
+        rd = csv.DictReader(f)
+        head = [h for h in (rd.fieldnames or []) if h and h != "ts"]
+        for h in head:
+            series[h] = []
+        for row in rd:
+            raw = row.get("ts")
+            if raw is None:
+                continue
+            try:
+                t = int(float(raw) * 1000)
+            except (ValueError, TypeError):
+                continue
+            for h in head:
+                v = row.get(h)
+                if v is None or v == "":
+                    continue
+                try:
+                    x = float(v)
+                except (ValueError, TypeError):
+                    continue
+                series[h].append([t, x])
+            n += 1
+            if t0 is None or t < t0:
+                t0 = t
+            if t1 is None or t > t1:
+                t1 = t
+    if n == 0:
+        raise ValueError(f"{path.name} 没有数据行")
+    out: dict[str, list] = {}
+    for h, pts in series.items():
+        if not pts:
+            continue
+        if h in kb_cols:
+            h2 = h + "_mb"
+            out[h2] = [[t, round(v / 1024.0, 3)] for t, v in pts]
+        else:
+            out[h] = pts
+    out = {k: _downsample_minmax(v, max_points) for k, v in out.items()}
+    rng = {}
+    for k, pts in out.items():
+        vs = [v for _, v in pts]
+        rng[k] = [round(min(vs), 3), round(max(vs), 3)] if vs else [0.0, 0.0]
+    # guest 已用 = total − avail（按时间戳对齐；缺一侧则跳过）
+    if "MemTotal_mb" in out and "MemAvailable_mb" in out:
+        av = dict(out["MemAvailable_mb"])
+        used = [[t, round(v - av.get(t, 0.0), 3)] for t, v in out["MemTotal_mb"]]
+        out["used_mb"] = used
+        vs = [v for _, v in used]
+        rng["used_mb"] = [round(min(vs), 3), round(max(vs), 3)] if vs else [0.0, 0.0]
+    return {"series": out, "range": rng, "t0": t0, "t1": t1, "n": n,
+            "fields": sorted(out)}
+
+
+def load_pervm(root: str, max_points: int = 900) -> dict:
+    """解析 pervm 批次目录 → 逐 sandbox 的 guest/host 配对数据。
+
+    返回 {root, vms:[{sandbox,pid,issue_id,sample_idx,label,t0,t1,
+                       guest:{...},host:{...},has_guest,has_host}], pairs, n}
+    sandbox 来自 per-vm/ 目录名，pid 经 index.jsonl 查到，host 取 host/<pid>.csv；
+    轨迹按采样窗口时间关联，取 issue_id/sample_idx 作标签（无匹配则空）。
+    有 guest 无 host（如 000803 那轮）也保留，前端画 guest 单侧。
+    """
+    p = Path(root).expanduser().resolve()
+    if not p.is_dir():
+        raise ValueError(f"目录不存在: {p}")
+    # index: sandbox -> pid（去重，重复登记取首条）
+    sb2pid: dict[str, str] = {}
+    ix = p / "index.jsonl"
+    if ix.is_file():
+        for line in ix.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip().startswith("{"):
+                continue
+            try:
+                d = json.loads(line)
+                sb = str(d.get("sandbox") or "")
+                pid = str(d.get("pid") or "")
+                if sb and pid and sb not in sb2pid:
+                    sb2pid[sb] = pid
+            except (json.JSONDecodeError, ValueError):
+                continue
+    # 轨迹时间窗 -> (issue_id, sample_idx, started_at)，用于给 sandbox 贴标签
+    ep_spans = []
+    for f in sorted((p / "runs").glob("*/records/*.json")):
+        if f.name == "run.json":
+            continue
+        try:
+            e = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        s, en = parse_ts(e.get("started_at")), parse_ts(e.get("finished_at"))
+        if s is None:
+            continue
+        ep_spans.append((s, en if en is not None else s,
+                         str(e.get("issue_id") or ""), e.get("sample_idx")))
+    ep_spans.sort()
+
+    def tag_of(t0: int, t1: int):
+        # ep_spans 的 s/en 与 t0/t1 都是 epoch ms（parse_ts 出 ms，CSV 乘了 1000）
+        pad = 120000  # 2 分钟容差：guest 探针可能早于轨迹几秒启动
+        best = None
+        for s, en, iss, samp in ep_spans:
+            if s - pad <= t0 <= en + pad or s - pad <= t1 <= en + pad or (t0 <= s and t1 >= en):
+                if best is None or s > best[0]:
+                    best = (s, iss, samp)
+        return (best[1], best[2]) if best else ("", None)
+
+    vms = []
+    gdir = p / "per-vm"
+    hdir = p / "host"
+    for d in sorted(gdir.iterdir()) if gdir.is_dir() else []:
+        if not d.is_dir():
+            continue
+        gf = d / "guest.csv"
+        sb = d.name
+        if not gf.is_file() or gf.stat().st_size < 40:
+            continue
+        try:
+            g = _pervm_csv(gf, PERVM_GUEST_KB, max_points)
+        except (ValueError, OSError):
+            continue
+        pid = sb2pid.get(sb, "")
+        hf = hdir / (pid + ".csv") if pid else None
+        h = None
+        if hf and hf.is_file() and hf.stat().st_size >= 40:
+            try:
+                h = _pervm_csv(hf, set(), max_points)
+            except (ValueError, OSError):
+                h = None
+        iss, samp = tag_of(g["t0"], g["t1"])
+        label_bits = [iss]
+        if samp is not None:
+            label_bits.append("s" + str(samp))
+        label_bits.append(sb[:8])
+        vms.append({
+            "sandbox": sb, "pid": pid, "issue_id": iss, "sample_idx": samp,
+            "label": " ".join(x for x in label_bits if x),
+            "t0": g["t0"], "t1": g["t1"], "n": g["n"],
+            "guest": g, "host": h,
+            "has_guest": True, "has_host": h is not None,
+        })
+    # 只有 host、没有 guest 的 pid 也列出来（000803 那轮只有 host 曲线）
+    paired_pids = {v["pid"] for v in vms if v["pid"]}
+    for hf in sorted(hdir.glob("*.csv")) if hdir.is_dir() else []:
+        pid = hf.stem
+        if pid in paired_pids:
+            continue
+        sb = next((s for s, v in sb2pid.items() if v == pid), "")
+        if not sb or hf.stat().st_size < 40:
+            continue
+        try:
+            h = _pervm_csv(hf, set(), max_points)
+        except (ValueError, OSError):
+            continue
+        iss, samp = tag_of(h["t0"], h["t1"])
+        vms.append({
+            "sandbox": sb, "pid": pid, "issue_id": iss, "sample_idx": samp,
+            "label": " ".join(x for x in [iss, ("s" + str(samp)) if samp is not None else "", sb[:8]] if x) + " (host only)",
+            "t0": h["t0"], "t1": h["t1"], "n": h["n"],
+            "guest": None, "host": h, "has_guest": False, "has_host": True,
+        })
+    vms.sort(key=lambda v: (v["issue_id"], v["sample_idx"] if v["sample_idx"] is not None else 99, v["sandbox"]))
+    return {"root": str(p), "vms": vms,
+            "pairs": PERVM_PAIRS, "n": len(vms),
+            "n_guest": sum(v["has_guest"] for v in vms),
+            "n_host": sum(v["has_host"] for v in vms)}

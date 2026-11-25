@@ -167,17 +167,23 @@
   }
   .per-menu button:hover { background: var(--hover, #2b3550); }
   #memBig .mm-grp { display: flex; flex-direction: column; }
-  #memBig, #memCmp, #memVm, #memGuest, #memPair {
+  #memBig, #memCmp, #memVm, #memGuest, #memPair, #memPerVm {
     position: fixed; inset: 0; z-index: 80; display: none; flex-direction: column;
     background: rgba(10, 13, 19, .985); padding: 12px; box-sizing: border-box;
   }
-  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h, #memPair .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read, #memPair .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
-  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body { flex: 1; min-height: 0; }
+  #memBig .mb-h, #memCmp .mb-h, #memVm .mb-h, #memGuest .mb-h, #memPair .mb-h, #memPerVm .mb-h { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #memBig .mb-read, #memCmp .mb-read, #memVm .mb-read, #memGuest .mb-read, #memPair .mb-read, #memPerVm .mb-read { flex: 1; font: 11px var(--mono); overflow: hidden; white-space: nowrap; height: 16px; line-height: 16px; }
+  #memBig .mb-body, #memCmp .mb-body, #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body, #memPerVm .mb-body { flex: 1; min-height: 0; }
   #memCmp .mb-body { overflow-y: auto; }
-  #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body { overflow-y: auto; }
-  #memVm .mb-body canvas, #memGuest .mb-body canvas, #memPair .mb-body canvas { display: block; }
-  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields, #memGuest .mb-fields, #memPair .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memVm .mb-body, #memGuest .mb-body, #memPair .mb-body, #memPerVm .mb-body { overflow-y: auto; }
+  #memVm .mb-body canvas, #memGuest .mb-body canvas, #memPair .mb-body canvas, #memPerVm .mb-body canvas { display: block; }
+  #memBig .mb-fields, #memCmp .mb-fields, #memVm .mb-fields, #memGuest .mb-fields, #memPair .mb-fields, #memPerVm .mb-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 76px; overflow: auto; margin-top: 8px; }
+  #memPerVm .mb-note { font: 11px var(--mono); color: var(--dim); padding: 2px 0 6px; line-height: 1.5; }
+  #memPerVm .mb-legend { display: flex; gap: 14px; align-items: center; font: 11px var(--mono); padding: 2px 0 6px; }
+  #memPerVm .ln { display: inline-block; width: 18px; height: 0; border-top: 2px solid currentColor; vertical-align: middle; }
+  #memPerVm .ln.solid { border-top-style: solid; }
+  #memPerVm .ln.dashed { border-top-style: dashed; }
+  #memPerVm select { max-width: 340px; }
   #memPair .mb-note { font: 11px var(--mono); color: var(--dim); padding: 2px 0 6px; line-height: 1.5; }
   #memPair .mb-legend { display: flex; gap: 14px; align-items: center; font: 11px var(--mono); padding: 2px 0 6px; }
   #memPair .mb-legend .ln { display: inline-block; width: 18px; vertical-align: middle; margin-right: 4px; border-top: 2px solid var(--text); }
@@ -538,11 +544,12 @@
       </div>
       <button class="btn" id="memCmpBtn" title="跨路对比相同元数据：独立界面，横轴以各 run 开始时间为 t=0">元数据对比</button>
       <div class="per-host" id="perHost">
-        <button class="btn" id="perBtn" title="沙箱视角：宿主 fc（VMM 进程）、guest（注入 /proc）、同沙箱两侧对照">per ▾</button>
+        <button class="btn" id="perBtn" title="沙箱视角：宿主 fc（VMM）、guest（注入 /proc）、两侧对照、pervm-12 逐沙箱采样">per ▾</button>
         <div class="per-menu" id="perMenu">
           <button data-per="fc" title="宿主 Firecracker 进程（VMM）视角，来自 memlog 的 per_vm 段">per-fc · 宿主</button>
           <button data-per="guest" title="guest.csv，注入 guest 读 /proc 的视角">guest · 客户机</button>
           <button data-per="pair" title="同一沙箱的 fc 与 guest 相同物理量画在一起，观察两者关系">对照 · fc↔guest</button>
+          <button data-per="pervm" title="pervm-12 布局：per-vm/<sandbox>/guest.csv 与 host/<pid>.csv 按 index.jsonl 配对，逐沙箱双视角曲线">逐VM · pervm-12</button>
         </div>
       </div>
       <button class="btn" id="autoLoadBtn" title="扫描当前根目录下所有 run，自动为每路加载轨迹 + host memlog + guest.csv，然后打开 guest 视图">整目录加载</button>
@@ -4437,6 +4444,7 @@
     if (mode === 'fc') openMemVm();
     else if (mode === 'guest') openMemGuest();
     else if (mode === 'pair') openMemPair();
+    else if (mode === 'pervm') openMemPerVm();
   });
   document.addEventListener('click', (e) => {
     if (perHostEl && perHostEl.classList.contains('open') && !perHostEl.contains(e.target))
@@ -5267,6 +5275,298 @@
     pairHoverTool = null;
     if (pairRaf) { cancelAnimationFrame(pairRaf); pairRaf = 0; }
     drawMemPair();
+  });
+
+  /* ── 逐 VM 对照视图（pervm-12 布局）───────────────────────────────
+     数据源：per-vm/<sandbox>/guest.csv（guest 读 /proc，kB）与 host/<pid>.csv
+     （宿主 fc smaps，MB），靠 index.jsonl 把 sandbox↔pid 配对。后端 load_pervm
+     已把两侧统一成 MB 序列并按时间窗贴上 issue/sample 标签。
+     与 pair 视图的区别：pair 桥接键是 sample_idx、两侧各一条曲线；这里一台沙箱
+     一组 guest/host，选 sandbox 下拉切换，字段按语义可比量成对（已用↔RSS 等）。 */
+  const memPerVmEl = document.createElement('div');
+  memPerVmEl.id = 'memPerVm';
+  memPerVmEl.innerHTML =
+    '<div class="mb-h">' +
+      '<b>逐 VM 对照</b> <span class="dim" id="pvmBuild"></span>' +
+      '<span class="mb-read" id="pvmRead"></span>' +
+      '<select id="pvmRoot" title="pervm 批次目录（含 index.jsonl / per-vm / host）"></select>' +
+      '<select id="pvmVm" title="选择一个沙箱"></select>' +
+      '<select id="pvmField" title="两侧可比物理量"></select>' +
+      '<button class="btn" id="pvmReload" title="重新读取当前目录">重读</button>' +
+      '<button class="btn" id="pvmClose">关闭（Esc）</button>' +
+    '</div>' +
+    '<div class="mb-note" id="pvmNote"></div>' +
+    '<div class="mb-legend" id="pvmLegend"></div>' +
+    '<div class="mb-body"><canvas id="pvmCv"></canvas></div>' +
+    '<div class="mb-fields" id="pvmList"></div>';
+  document.body.appendChild(memPerVmEl);
+  const pvmCvEl = memPerVmEl.querySelector('#pvmCv');
+  let pvmData = null;
+  let pvmVmIdx = 0;
+  let pvmKey = 'used';
+  let pvmCursorX = null;
+  let pvmLayoutKey = '';
+  let pvmRaf = 0;
+  let pvmHits = [];
+  const pvmCfg = () => (pvmData && pvmData.pairs.find(p => p.key === pvmKey)) || null;
+
+  function pvmRootCandidates() {
+    const c = [];
+    const push = (x) => { if (x && !c.includes(x)) c.push(x); };
+    if (state && state.rootPath) push(String(state.rootPath).trim());
+    if (state && state.lanes && state.lanes.length) {
+      for (const l of state.lanes) if (l && l.payload && l.payload.root) push(String(l.payload.root).trim());
+    }
+    return c.filter(x => !x.startsWith('加载') && x !== '未打开数据' && !x.startsWith('无数据'));
+  }
+
+  async function fetchPvmData(root) {
+    if (!root) return null;
+    try {
+      const res = await fetch('/api/pervm/load?path=' + encodeURIComponent(root));
+      const j = await res.json();
+      if (!j || j.error || !j.vms || !j.vms.length) return null;
+      return j;
+    } catch (e) { return null; }
+  }
+
+  async function openMemPerVm() {
+    memPerVmEl.style.display = 'flex';
+    memCmpEl.style.display = 'none';
+    memBigEl.style.display = 'none';
+    memVmEl.style.display = 'none';
+    memGuestEl.style.display = 'none';
+    memPairEl.style.display = 'none';
+    memPerVmEl.querySelector('#pvmBuild').textContent = '构建 ' + BUILD;
+    const sel = memPerVmEl.querySelector('#pvmRoot');
+    let cands = pvmRootCandidates();
+    // 若当前根不是 pervm 布局，试着从 boot_root 补一个候选
+    try {
+      const st = await (await fetch('/api/status')).json();
+      if (st.boot_root) cands.push(String(st.boot_root));
+    } catch (e) { /* noop */ }
+    sel.innerHTML = cands.map(p => '<option value="' + p + '">' + p + '</option>').join('');
+    if (!sel.options.length) {
+      memPerVmEl.querySelector('#pvmNote').textContent =
+        '没找到 pervm 目录：请先用「打开文件夹」选一个有 index.jsonl / per-vm / host 的批次目录。';
+      return;
+    }
+    pvmData = await fetchPvmData(sel.value);
+    if (!pvmData) {
+      memPerVmEl.querySelector('#pvmNote').textContent = '这个目录不是 pervm 布局（缺 index.jsonl / per-vm / host）。';
+      return;
+    }
+    renderPvmVmSelect();
+    renderPvmFieldSelect();
+    await reloadMemPerVm();
+  }
+
+  function renderPvmVmSelect() {
+    const sel = memPerVmEl.querySelector('#pvmVm');
+    if (!pvmData || !pvmData.vms.length) { sel.innerHTML = ''; return; }
+    sel.innerHTML = pvmData.vms.map((v, i) => {
+      const both = v.has_guest && v.has_host ? '' : (v.has_guest ? ' ·仅guest' : ' ·仅host');
+      return '<option value="' + i + '">' + v.label + both + '</option>';
+    }).join('');
+    if (pvmVmIdx >= pvmData.vms.length) pvmVmIdx = 0;
+    sel.value = String(pvmVmIdx);
+  }
+
+  function renderPvmFieldSelect() {
+    const sel = memPerVmEl.querySelector('#pvmField');
+    if (!pvmData) { sel.innerHTML = ''; return; }
+    sel.innerHTML = pvmData.pairs.map(p => '<option value="' + p.key + '">' + p.label + '</option>').join('');
+    sel.value = pvmKey;
+  }
+
+  async function reloadMemPerVm() {
+    pvmLayoutKey = '';
+    pvmHits = [];
+    pvmCursorX = null;
+    const cfg = pvmCfg();
+    const vm = pvmData && pvmData.vms[pvmVmIdx];
+    memPerVmEl.querySelector('#pvmField').value = pvmKey;
+    if (!vm || !cfg) return;
+    memPerVmEl.querySelector('#pvmNote').textContent = cfg.note;
+    memPerVmEl.querySelector('#pvmLegend').innerHTML =
+      '<span><i class="ln solid"></i> guest 客户机（' + cfg.guest + '）</span>' +
+      '<span><i class="ln dashed"></i> host fc 宿主（' + cfg.host + '）</span>' +
+      '<span class="dim">sandbox ' + vm.sandbox.slice(0, 16) + ' · pid ' + (vm.pid || '—') +
+      ' · guest ' + vm.n + ' 帧</span>';
+    drawMemPerVm();
+  }
+
+  function drawMemPerVm() {
+    if (memPerVmEl.style.display === 'none') return;
+    const cfg = pvmCfg();
+    const vm = pvmData && pvmData.vms[pvmVmIdx];
+    const body = memPerVmEl.querySelector('.mb-body');
+    const W = body.clientWidth;
+    const ctx = pvmCvEl.getContext('2d');
+    const axisH = 30;
+    const H = Math.max(260, (body.clientHeight || 600) - 4);
+    const lk = [W, H, window.devicePixelRatio, pvmVmIdx, pvmKey].join('|');
+    if (lk !== pvmLayoutKey) { prepCv(pvmCvEl, ctx, W, H); pvmLayoutKey = lk; }
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!vm || !cfg) return;
+    const gser = (vm.guest && vm.guest.series[cfg.guest]) || [];
+    const hser = (vm.host && vm.host.series[cfg.host]) || [];
+    if (!gser.length && !hser.length) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '13px Consolas, monospace';
+      ctx.fillText('这个沙箱两侧都没有所选字段的数据（换一个字段或沙箱）', 20, 30);
+      return;
+    }
+    // 横轴：两侧时间戳的并集范围（epoch ms）
+    let t0 = Infinity, t1 = -Infinity;
+    for (const p of gser) { if (p[0] < t0) t0 = p[0]; if (p[0] > t1) t1 = p[0]; }
+    for (const p of hser) { if (p[0] < t0) t0 = p[0]; if (p[0] > t1) t1 = p[0]; }
+    if (!(t1 > t0)) t1 = t0 + 1;
+    let vMax = 0;
+    for (const [, v] of gser) if (v > vMax) vMax = v;
+    for (const [, v] of hser) if (v > vMax) vMax = v;
+    const tick = niceTicks(vMax || 1, 4);
+    const x0 = 74, x1 = W - 74, y0 = 10, y1 = H - axisH - 10;
+    const xx = (t) => x0 + (t - t0) / (t1 - t0) * (x1 - x0);
+    const vy = (v) => y1 - (v / tick.top) * (y1 - y0);
+    ctx.fillStyle = C.bandBg;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.font = '10px Consolas, monospace';
+    for (const tv of tick.ticks) {
+      const py = vy(tv);
+      ctx.fillStyle = C.gutterLine;
+      ctx.fillRect(x0, py, x1 - x0, 1);
+      ctx.fillStyle = C.dim;
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtMem(tv), x0 - 6, py + 3);
+    }
+    // 横轴刻度：经过的分钟（相对起点 mm:ss）
+    ctx.textAlign = 'center';
+    for (let k = 0; k <= 6; k++) {
+      const t = t0 + (t1 - t0) * k / 6;
+      const px = xx(t);
+      const sec = Math.round((t - t0) / 1000);
+      ctx.fillStyle = C.dim;
+      ctx.fillText(Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'), px, y1 + 16);
+    }
+    ctx.textAlign = 'left';
+    ctx.fillStyle = C.text;
+    ctx.font = '11px Consolas, monospace';
+    ctx.fillText(cfg.label + '  MB', x0 + 4, y0 + 14);
+    // 画曲线：guest 实线（gen 蓝），host 虚线（tool 绿）
+    const plot = (pts, color, dash) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(dash ? [5, 3] : []);
+      ctx.beginPath();
+      let started = false;
+      for (const [t, v] of pts) {
+        const px = xx(t), py = vy(v);
+        if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    if (hser.length) plot(hser, C.tool, true);
+    if (gser.length) plot(gser, C.gen, false);
+    // 游标：找最近点，打点 + 贴读数
+    pvmHits = [];
+    if (pvmCursorX != null && pvmCursorX >= x0 && pvmCursorX <= x1) {
+      const tCur = t0 + (pvmCursorX - x0) / (x1 - x0) * (t1 - t0);
+      ctx.strokeStyle = C.cursor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pvmCursorX, y0);
+      ctx.lineTo(pvmCursorX, y1);
+      ctx.stroke();
+      const near = (pts) => {
+        let best = null, bd = Infinity;
+        for (const q of pts) { const d = Math.abs(q[0] - tCur); if (d < bd) { bd = d; best = q; } }
+        return best;
+      };
+      const gp = near(gser), hp = near(hser);
+      const tags = [];
+      if (gp) {
+        ctx.fillStyle = C.gen;
+        ctx.beginPath(); ctx.arc(xx(gp[0]), vy(gp[1]), 3.5, 0, 6.2832); ctx.fill();
+        tags.push({ txt: 'guest ' + fmtMem(gp[1]) + ' MB', px: xx(gp[0]), py: vy(gp[1]), col: C.gen });
+      }
+      if (hp) {
+        ctx.fillStyle = C.bg; ctx.strokeStyle = C.tool; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(xx(hp[0]), vy(hp[1]), 3.5, 0, 6.2832); ctx.fill(); ctx.stroke();
+        tags.push({ txt: 'host ' + fmtMem(hp[1]) + ' MB', px: xx(hp[0]), py: vy(hp[1]), col: C.tool });
+      }
+      ctx.font = '10px Consolas, monospace';
+      for (const t of tags) {
+        const tw = ctx.measureText(t.txt).width;
+        let lx = t.px + 8, ly = t.py - 8;
+        if (lx + tw > W - 4) lx = t.px - 8 - tw;
+        if (ly < y0 + 12) ly = t.py + 14;
+        ctx.fillStyle = C.bg;
+        ctx.fillRect(lx - 2, ly - 10, tw + 4, 13);
+        ctx.fillStyle = t.col;
+        ctx.fillText(t.txt, lx, ly);
+      }
+    }
+    // 读数行
+    const gpk = vm.guest ? (vm.guest.range[cfg.guest] || []) : [];
+    const hpk = vm.host ? (vm.host.range[cfg.host] || []) : [];
+    memPerVmEl.querySelector('#pvmRead').textContent =
+      'guest 峰值 ' + (gpk.length ? fmtMem(gpk[1]) : '—') + ' MB' +
+      ' · host 峰值 ' + (hpk.length ? fmtMem(hpk[1]) : '—') + ' MB' +
+      (vm.has_guest && vm.has_host ? '' : ' · ⚠ 只有单侧采样');
+    // 字段列表：本沙箱两侧所有可比字段，点字段直接切换
+    const list = memPerVmEl.querySelector('#pvmList');
+    list.innerHTML = (pvmData ? pvmData.pairs : []).map(p => {
+      const g = vm.guest && vm.guest.range[p.guest];
+      const h = vm.host && vm.host.range[p.host];
+      return '<button class="btn' + (p.key === pvmKey ? ' active' : '') + '" data-pvm-field="' + p.key + '">' +
+        p.label + (g ? ' g' + fmtMem(g[1]) : '') + (h ? ' h' + fmtMem(h[1]) : '') + '</button>';
+    }).join('');
+    list.querySelectorAll('button[data-pvm-field]').forEach(b => {
+      b.onclick = () => { pvmKey = b.getAttribute('data-pvm-field'); reloadMemPerVm(); };
+    });
+  }
+
+  memPerVmEl.querySelector('#pvmRoot').addEventListener('change', async (e) => {
+    pvmData = await fetchPvmData(e.target.value);
+    pvmVmIdx = 0;
+    if (pvmData) { renderPvmVmSelect(); renderPvmFieldSelect(); }
+    await reloadMemPerVm();
+  });
+  memPerVmEl.querySelector('#pvmVm').addEventListener('change', (e) => {
+    pvmVmIdx = parseInt(e.target.value, 10) || 0;
+    reloadMemPerVm();
+  });
+  memPerVmEl.querySelector('#pvmField').addEventListener('change', (e) => {
+    pvmKey = e.target.value;
+    reloadMemPerVm();
+  });
+  memPerVmEl.querySelector('#pvmReload').addEventListener('click', async () => {
+    const sel = memPerVmEl.querySelector('#pvmRoot');
+    if (sel.value) pvmData = await fetchPvmData(sel.value);
+    if (pvmData) renderPvmVmSelect();
+    await reloadMemPerVm();
+  });
+  memPerVmEl.querySelector('#pvmClose').addEventListener('click', () => { memPerVmEl.style.display = 'none'; });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && memPerVmEl.style.display !== 'none') {
+      e.stopPropagation();
+      memPerVmEl.style.display = 'none';
+      pvmCursorX = null;
+    }
+  }, true);
+  pvmCvEl.addEventListener('mousemove', (e) => {
+    const r = pvmCvEl.getBoundingClientRect();
+    pvmCursorX = e.clientX - r.left;
+    if (pvmRaf) return;
+    pvmRaf = requestAnimationFrame(() => { pvmRaf = 0; drawMemPerVm(); });
+  });
+  pvmCvEl.addEventListener('mouseleave', () => {
+    pvmCursorX = null;
+    if (pvmRaf) { cancelAnimationFrame(pvmRaf); pvmRaf = 0; }
+    drawMemPerVm();
   });
 
   /* 整目录一键加载：扫描当前根目录下所有 run，每路配一条 lane，自动挂
@@ -6250,7 +6550,48 @@
         samp: t.samp, label: t.label, n: t.n, col: vmColOf(i, k),
         peak: Math.max(0, ...(t.series[gsField] || []).map(p => p[1] * guestScale(gsField)))
       })) : []
-    })) };
+    })),
+    openMemPerVm,
+    pvmState: () => ({
+      open: memPerVmEl.style.display !== 'none',
+      roots: [...memPerVmEl.querySelectorAll('#pvmRoot option')].map(o => o.value),
+      root: memPerVmEl.querySelector('#pvmRoot').value,
+      n: pvmData ? pvmData.n : 0,
+      nGuest: pvmData ? pvmData.n_guest : 0,
+      nHost: pvmData ? pvmData.n_host : 0,
+      vms: pvmData ? pvmData.vms.length : 0,
+      fields: pvmData ? pvmData.pairs.map(p => p.key) : [],
+      vmIdx: pvmVmIdx, key: pvmKey,
+      note: memPerVmEl.querySelector('#pvmNote').textContent,
+      read: memPerVmEl.querySelector('#pvmRead').textContent,
+      legend: memPerVmEl.querySelector('#pvmLegend').textContent,
+    }),
+    pvmSetRoot: async (p) => {
+      const sel = memPerVmEl.querySelector('#pvmRoot');
+      sel.innerHTML = '<option value="' + p + '">' + p + '</option>';
+      sel.value = p;
+      pvmData = await fetchPvmData(p);
+      pvmVmIdx = 0;
+      if (pvmData) { renderPvmVmSelect(); renderPvmFieldSelect(); }
+      await reloadMemPerVm();
+      return !!pvmData;
+    },
+    pvmSetVm: (i) => { pvmVmIdx = i; memPerVmEl.querySelector('#pvmVm').value = String(i); return reloadMemPerVm(); },
+    pvmSetField: (f) => { pvmKey = f; return reloadMemPerVm(); },
+    pvmView: () => {
+      const vm = pvmData && pvmData.vms[pvmVmIdx];
+      const cfg = pvmCfg();
+      if (!vm || !cfg) return null;
+      const gp = (vm.guest && vm.guest.series[cfg.guest]) || [];
+      const hp = (vm.host && vm.host.series[cfg.host]) || [];
+      return { label: vm.label, sandbox: vm.sandbox, pid: vm.pid,
+        hasGuest: vm.has_guest, hasHost: vm.has_host, key: pvmKey,
+        guestField: cfg.guest, hostField: cfg.host,
+        guestN: gp.length, hostN: hp.length,
+        guestPeak: Math.max(0, ...gp.map(q => q[1])),
+        hostPeak: Math.max(0, ...hp.map(q => q[1])),
+        hits: pvmHits.length };
+    } };
 
   boot();
 })();

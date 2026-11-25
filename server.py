@@ -97,6 +97,7 @@ MEMLOG_CACHE: dict[str, tuple] = {}  # path -> (mtime_ns, size, json_bytes)
 VM_CACHE: dict[str, tuple] = {}      # path -> ((mtime_ns, size, metric), json_bytes)
 GUEST_CACHE: dict[str, tuple] = {}   # path -> ((mtime_ns, size), json_bytes)
 RUN_GUEST_CACHE: dict[str, tuple] = {}  # run 目录 -> ((sig), json_bytes)
+PERVM_CACHE: dict[str, tuple] = {}   # pervm 批次目录 -> ((index mtime, 文件数), json_bytes)
 
 
 def memlog_json(path_str: str, ref_ms=None) -> bytes:
@@ -132,6 +133,31 @@ def vm_json(path_str: str, metric: str = "rss") -> bytes:
     if len(VM_CACHE) >= 12:
         VM_CACHE.pop(next(iter(VM_CACHE)))
     VM_CACHE[str(p)] = (sig, body)
+    return body
+
+
+def pervm_json(path_str: str) -> bytes:
+    """pervm 批次目录的逐 sandbox guest/host 配对数据：整个目录解析一次并缓存。
+
+    指纹 = index.jsonl 的 (mtime,size) + guest/host csv 文件数；采样期目录静态，
+    文件数不变即命中缓存，避免每次点击都重读上百份 CSV。
+    """
+    p = Path(path_str).expanduser().resolve()
+    if not p.is_dir():
+        raise ValueError(f"目录不存在: {p}")
+    ix = p / "index.jsonl"
+    ix_sig = (ix.stat().st_mtime_ns, ix.stat().st_size) if ix.is_file() else (0, 0)
+    n_g = len(list((p / "per-vm").glob("*/guest.csv"))) if (p / "per-vm").is_dir() else 0
+    n_h = len(list((p / "host").glob("*.csv"))) if (p / "host").is_dir() else 0
+    sig = (ix_sig, n_g, n_h)
+    hit = PERVM_CACHE.get(str(p))
+    if hit and hit[0] == sig:
+        return hit[1]
+    d = scope_data.load_pervm(str(p))
+    body = json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(PERVM_CACHE) >= 6:
+        PERVM_CACHE.pop(next(iter(PERVM_CACHE)))
+    PERVM_CACHE[str(p)] = (sig, body)
     return body
 
 
@@ -320,6 +346,8 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/guest/run":
                 paths = [v for k, v in q.items() if k.startswith("f") and k[1:].isdigit()]
                 self._json_bytes(guest_json(q.get("path", ""), paths))
+            elif u.path == "/api/pervm/load":
+                self._json_bytes(pervm_json(q.get("path", "")))
             elif u.path in ("/", "/index.html"):
                 self._index()
             elif u.path == "/data.js":
